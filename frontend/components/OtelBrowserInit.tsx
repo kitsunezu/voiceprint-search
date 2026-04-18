@@ -47,13 +47,15 @@ export function OtelBrowserInit() {
 
       if (_provider) return; // already initialised (Strict Mode second call)
 
+      const traceExportUrl = new URL("/api/otel/traces", window.location.origin).toString();
+
       _provider = new WebTracerProvider({
         resource: new Resource({ "service.name": "voiceprint-browser" }),
       });
 
       _provider.addSpanProcessor(
         new BatchSpanProcessor(
-          new OTLPTraceExporter({ url: "/api/otel/traces" })
+          new OTLPTraceExporter({ url: traceExportUrl })
         )
       );
 

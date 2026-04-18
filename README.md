@@ -133,6 +133,7 @@ Common variables:
 - MINIO_ACCESS_KEY: MinIO root username
 - MINIO_SECRET_KEY: MinIO root password
 - MINIO_BUCKET: object storage bucket name
+- NEXT_PUBLIC_SITE_URL: public frontend base URL used for canonical tags, sitemap, manifest, and social metadata
 - OTEL_EXPORTER_OTLP_ENDPOINT: OTEL / SigNoz collector endpoint
 - SEARCH_STRATEGY: best, centroid, or hybrid
 - SEPARATOR_PROFILE: demucs, mdx, or roformer
@@ -158,6 +159,7 @@ Before deploying, replace the default image references or set these variables in
 
 - FRONTEND_IMAGE
 - AI_SERVICE_IMAGE
+- NEXT_PUBLIC_SITE_URL
 - DB_PASSWORD
 - MINIO_ACCESS_KEY
 - MINIO_SECRET_KEY

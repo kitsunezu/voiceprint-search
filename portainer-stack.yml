@@ -9,6 +9,7 @@ services:
     environment:
       NODE_ENV: production
       AI_SERVICE_URL: http://ai-service:8000
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3010}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_SERVICE_NAME: ${FRONTEND_OTEL_SERVICE_NAME:-voiceprint-frontend}
     depends_on:

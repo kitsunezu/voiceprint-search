@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useTranslations, useLocale } from "next-intl";
 import { usePathname } from "next/navigation";
@@ -27,13 +28,23 @@ export function Navbar() {
 
   return (
     <header className="sticky top-0 z-40 border-b border-border bg-background/90 backdrop-blur-md">
-      <nav className="max-w-5xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-4">
+      <nav className="max-w-6xl mx-auto px-4 sm:px-6 h-14 flex items-center gap-4">
         {/* Brand */}
         <Link
           href="/"
-          className="shrink-0 text-base font-bold tracking-tight hover:text-primary transition-colors"
+          className="shrink-0 flex items-center gap-2.5 text-base font-bold tracking-tight hover:text-primary transition-colors"
         >
-          {t("brand")}
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl border border-border/70 bg-card/80 p-1 shadow-sm">
+            <Image
+              src="/voiceprint-logo.png"
+              alt=""
+              aria-hidden
+              width={28}
+              height={28}
+              className="h-7 w-7 object-contain"
+            />
+          </span>
+          <span>{t("brand")}</span>
         </Link>
 
         {/* Desktop nav */}
@@ -73,7 +84,7 @@ export function Navbar() {
       {/* Mobile menu */}
       {mobileOpen && (
         <div className="sm:hidden border-t border-border bg-background/95 backdrop-blur-md animate-in slide-in-from-top-2 duration-150">
-          <div className="max-w-5xl mx-auto px-4 py-2 flex flex-col gap-0.5">
+          <div className="max-w-6xl mx-auto px-4 py-2 flex flex-col gap-0.5">
             {links.map((l) => (
               <Link
                 key={l.href}
