@@ -154,7 +154,12 @@ def process_with_timings(
         timings["segment"] = time.perf_counter() - t0
         timings["preprocess_total"] = round(sum(timings.values()), 4)
 
-        return PreprocessResult(segments=segments, total_speech_seconds=total_speech_seconds), timings
+        return PreprocessResult(
+            segments=segments,
+            analysis_waveform=speech,
+            playback_source_path=wav_path,
+            total_speech_seconds=total_speech_seconds,
+        ), timings
     finally:
         for path in cleanup_files:
             try:

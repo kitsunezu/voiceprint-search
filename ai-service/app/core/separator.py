@@ -16,7 +16,7 @@ import subprocess
 import tempfile
 
 from app.config import SeparatorProfile, Settings, settings
-from app.core.audio import get_audio_duration
+from app.core.audio import get_audio_duration, resolve_trim_window
 
 logger = logging.getLogger(__name__)
 
@@ -98,25 +98,32 @@ class VocalSeparator:
         except Exception:
             duration = None
 
-        # The upstream normalizer already produces mono 16 kHz WAV. If the
-        # file is already within the separator window, avoid a second FFmpeg
-        # decode/encode pass entirely.
-        if duration is not None and duration <= (self.cfg.separator_max_seconds + 0.25):
+        start, limit = resolve_trim_window(duration, self.cfg.separator_max_seconds)
+
+        # Keep the full-fidelity source whenever it already fits in the
+        # separator window. Separation quality drops noticeably if we pre-downsample.
+        if start <= 0 and limit is None:
             return wav_path
 
         trimmed = os.path.join(work_dir, "input.wav")
+        cmd = ["ffmpeg"]
+        if start > 0:
+            cmd += ["-ss", f"{start:.3f}"]
+        cmd += [
+            "-i", wav_path,
+        ]
+        if limit is not None:
+            cmd += ["-t", f"{limit:.3f}"]
+        cmd += [
+            "-vn",
+            "-c:a", "pcm_s16le",
+            "-y", trimmed,
+        ]
         subprocess.run(
-            [
-                "ffmpeg",
-                "-i", wav_path,
-                "-t", str(self.cfg.separator_max_seconds),
-                "-ac", "1",
-                "-ar", "16000",
-                "-y", trimmed,
-            ],
+            cmd,
             capture_output=True,
             check=True,
-            timeout=min(120, self.cfg.separator_timeout_seconds),
+            timeout=min(180, self.cfg.separator_timeout_seconds),
         )
         return trimmed
 

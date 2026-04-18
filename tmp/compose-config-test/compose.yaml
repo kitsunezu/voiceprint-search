@@ -1,0 +1,11 @@
+services:
+  demo:
+    image: busybox
+    command: ["sh", "-c", "cat /demo.txt && sleep 1"]
+    configs:
+      - source: demo_cfg
+        target: /demo.txt
+configs:
+  demo_cfg:
+    content: |
+      hello

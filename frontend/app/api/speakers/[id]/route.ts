@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const AI_BASE = process.env.AI_SERVICE_URL ?? "http://localhost:8000";
+import { aiUrl, buildAiProxyHeaders } from "@/app/api/_lib/ai-proxy";
 
 export async function PATCH(
   request: NextRequest,
@@ -8,9 +8,9 @@ export async function PATCH(
 ) {
   const { id } = await params;
   const body = await request.json();
-  const res = await fetch(`${AI_BASE}/api/v1/speakers/${id}`, {
+  const res = await fetch(aiUrl(`/api/v1/speakers/${id}`), {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: buildAiProxyHeaders(request, { "Content-Type": "application/json" }),
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({ detail: "AI service unavailable" }));
@@ -18,12 +18,13 @@ export async function PATCH(
 }
 
 export async function DELETE(
-  _: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const res = await fetch(`${AI_BASE}/api/v1/speakers/${id}`, {
+  const res = await fetch(aiUrl(`/api/v1/speakers/${id}`), {
     method: "DELETE",
+    headers: buildAiProxyHeaders(request),
   });
   if (res.status === 204) return new NextResponse(null, { status: 204 });
   const data = await res.json().catch(() => ({ detail: "AI service unavailable" }));

@@ -6,14 +6,12 @@ import shutil
 import tempfile
 import uuid
 
-import numpy as np
-import scipy.io.wavfile as _wavfile
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_embedder_registry, get_minio, get_preprocessor
 from app.config import settings
-from app.core.audio import validate_extension
+from app.core.audio import get_audio_duration, render_playback_audio, validate_extension
 from app.core.embedder import EmbedderRegistry, embed_segments
 from app.core.preprocessing import AudioPreprocessor, PreprocessError
 from app.db import repository as repo
@@ -38,9 +36,6 @@ async def enroll_speaker(
 ):
     if not audio.filename or not validate_extension(audio.filename):
         raise HTTPException(400, "Unsupported audio format")
-
-    if audio.size and audio.size > settings.max_upload_bytes:
-        raise HTTPException(413, "File too large")
 
     model_id = model.strip() or settings.default_model
     if model_id not in registry.available_ids:
@@ -68,13 +63,21 @@ async def enroll_speaker(
         # Compute embedding (multi-segment averaging for long audio)
         embedding = embed_segments(embedder, result.segments)
 
-        # Save processed vocal audio (VAD-extracted, vocals-separated) for playback.
-        # This gives a clean, short voice sample instead of the full original song.
-        SAMPLE_RATE = 16_000
+        # Save a higher-quality playback file from the separated source audio.
+        # Keep the embedding pipeline on 16 kHz, but avoid storing VAD-spliced
+        # analysis audio for user playback.
+        PLAYBACK_SAMPLE_RATE = 44_100
         vocal_wav_path = os.path.join(tmp_dir, f"vocal_{uuid.uuid4().hex[:8]}.wav")
-        pcm = (np.clip(result.analysis_waveform, -1.0, 1.0) * 32767).astype(np.int16)
-        _wavfile.write(vocal_wav_path, SAMPLE_RATE, pcm)
-        duration = len(result.analysis_waveform) / SAMPLE_RATE
+        render_playback_audio(
+            result.playback_source_path,
+            output_path=vocal_wav_path,
+            sample_rate=PLAYBACK_SAMPLE_RATE,
+            max_duration_seconds=settings.preprocess_normalize_max_seconds,
+        )
+        processed_size = os.path.getsize(vocal_wav_path)
+        if processed_size > settings.max_upload_bytes:
+            raise HTTPException(413, "File too large")
+        duration = get_audio_duration(vocal_wav_path)
 
         # Get or create speaker
         if speaker_id:
@@ -105,7 +108,7 @@ async def enroll_speaker(
             original_filename=audio.filename,
             storage_key=object_key,
             duration_seconds=duration,
-            sample_rate=16_000,
+            sample_rate=PLAYBACK_SAMPLE_RATE,
         )
         emb = await repo.create_embedding(
             db,

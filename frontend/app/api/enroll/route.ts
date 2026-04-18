@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
-export const maxDuration = 600; // 10 minutes — large audio files take time
+import { aiUrl, buildAiProxyHeaders } from "@/app/api/_lib/ai-proxy";
 
-const AI_BASE = process.env.AI_SERVICE_URL ?? "http://localhost:8000";
+export const maxDuration = 600; // 10 minutes — large audio files take time
 
 export async function POST(request: NextRequest) {
   const formData = await request.formData();
 
-  const res = await fetch(`${AI_BASE}/api/v1/enroll`, {
+  const res = await fetch(aiUrl("/api/v1/enroll"), {
     method: "POST",
+    headers: buildAiProxyHeaders(request),
     body: formData,
   });
 

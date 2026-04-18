@@ -1,9 +1,12 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
-const AI_BASE = process.env.AI_SERVICE_URL ?? "http://localhost:8000";
+import { aiUrl, buildAiProxyHeaders } from "@/app/api/_lib/ai-proxy";
 
-export async function GET() {
-  const res = await fetch(`${AI_BASE}/api/v1/speakers`, { cache: "no-store" });
+export async function GET(request: NextRequest) {
+  const res = await fetch(aiUrl("/api/v1/speakers"), {
+    cache: "no-store",
+    headers: buildAiProxyHeaders(request),
+  });
   const data = await res.json().catch(() => ({ detail: "AI service unavailable" }));
   return NextResponse.json(data, { status: res.status });
 }

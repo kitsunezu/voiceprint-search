@@ -128,9 +128,9 @@ class Settings(BaseSettings):
     # All enroll / verify / search requests go through this mandatory pipeline.
     preprocess_separate_vocals: bool = True   # always run Demucs vocal separation
     preprocess_denoise: bool = True           # always run CPU-first noise reduction
-    preprocess_normalize_max_seconds: int = 45  # max raw audio window decoded before downstream steps
+    preprocess_normalize_max_seconds: int = 240  # max post-separation audio window decoded before downstream steps
     preprocess_min_speech_seconds: float = 3.0   # minimum usable speech after VAD
-    preprocess_max_speech_seconds: float = 30.0  # max speech fed to embedder
+    preprocess_max_speech_seconds: float = 180.0  # max speech fed to embedder
     preprocess_segment_length_seconds: float = 6.0  # fixed-length window for long speech
     preprocess_segment_step_seconds: float = 3.0    # hop between windows (overlap = seg-step)
     preprocess_short_repeat: bool = True      # repeat-pad speech shorter than min to reach min
@@ -142,7 +142,7 @@ class Settings(BaseSettings):
     separator_model_dir: str = "/models/separators"   # persistent model cache for separators
     separator_cache_dir: str = "/tmp/voiceprint-separator-cache"
     separator_cache_enabled: bool = True
-    separator_max_seconds: int = 45
+    separator_max_seconds: int = 240
     separator_timeout_seconds: int = 600
 
     # ── Search aggregation ────────────────────────────────────────────────

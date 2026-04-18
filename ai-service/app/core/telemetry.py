@@ -49,6 +49,10 @@ def setup_telemetry(service_name: str, endpoint: str) -> None:
     if not endpoint:
         return
 
+    root_logger = logging.getLogger()
+    if root_logger.level > logging.INFO:
+        root_logger.setLevel(logging.INFO)
+
     base = endpoint.rstrip("/")
     resource = Resource.create({"service.name": service_name})
 

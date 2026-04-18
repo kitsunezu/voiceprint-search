@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const AI_BASE = process.env.AI_SERVICE_URL ?? "http://localhost:8000";
+import { aiUrl, buildAiProxyHeaders } from "@/app/api/_lib/ai-proxy";
 
 export async function GET(
   req: NextRequest,
@@ -9,12 +9,12 @@ export async function GET(
   const { id } = await params;
 
   // Forward Range header so the browser can seek
-  const upstreamHeaders: HeadersInit = {};
+  const upstreamHeaders = buildAiProxyHeaders(req);
   const range = req.headers.get("range");
-  if (range) upstreamHeaders["Range"] = range;
+  if (range) upstreamHeaders.set("Range", range);
 
   const res = await fetch(
-    `${AI_BASE}/api/v1/speakers/${encodeURIComponent(id)}/audio`,
+    aiUrl(`/api/v1/speakers/${encodeURIComponent(id)}/audio`),
     { cache: "no-store", headers: upstreamHeaders },
   );
 
