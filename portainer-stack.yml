@@ -1,0 +1,215 @@
+services:
+  frontend:
+    image: ${FRONTEND_IMAGE:-ghcr.io/kitsunezu/voiceprint-search-frontend:main}
+    pull_policy: always
+    container_name: voiceprint-frontend
+    restart: unless-stopped
+    ports:
+      - "${FRONTEND_PORT:-3010}:3000"
+    environment:
+      NODE_ENV: production
+      AI_SERVICE_URL: http://ai-service:8000
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${FRONTEND_OTEL_SERVICE_NAME:-voiceprint-frontend}
+    depends_on:
+      ai-service:
+        condition: service_healthy
+    networks:
+      - voiceprint-net
+
+  ai-service:
+    image: ${AI_SERVICE_IMAGE:-ghcr.io/kitsunezu/voiceprint-search-ai-service:main}
+    pull_policy: always
+    container_name: voiceprint-ai
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+asyncpg://voiceprint:${DB_PASSWORD:-voiceprint}@db:5432/voiceprint
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-voiceprint-audio}
+      MODEL_CACHE_DIR: /models
+      PREPROCESS_NORMALIZE_MAX_SECONDS: ${PREPROCESS_NORMALIZE_MAX_SECONDS:-45}
+      SEPARATOR_PROFILE: ${SEPARATOR_PROFILE:-demucs}
+      SEPARATOR_MODEL_OVERRIDE: ${SEPARATOR_MODEL_OVERRIDE:-}
+      SEPARATOR_MODEL_DIR: /models/separators
+      SEPARATOR_CACHE_DIR: /tmp/voiceprint-separator-cache
+      SEARCH_STRATEGY: ${SEARCH_STRATEGY:-hybrid}
+      SEARCH_HYBRID_BEST_WEIGHT: ${SEARCH_HYBRID_BEST_WEIGHT:-0.7}
+      SEARCH_HYBRID_CENTROID_WEIGHT: ${SEARCH_HYBRID_CENTROID_WEIGHT:-0.3}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${AI_OTEL_SERVICE_NAME:-voiceprint-ai-service}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - model-cache:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      db-init:
+        condition: service_completed_successfully
+    networks:
+      - voiceprint-net
+
+  worker:
+    image: ${AI_SERVICE_IMAGE:-ghcr.io/kitsunezu/voiceprint-search-ai-service:main}
+    pull_policy: always
+    container_name: voiceprint-worker
+    restart: unless-stopped
+    command: ["python", "-m", "dramatiq", "app.worker.tasks"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://voiceprint:${DB_PASSWORD:-voiceprint}@db:5432/voiceprint
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+      MINIO_BUCKET: ${MINIO_BUCKET:-voiceprint-audio}
+      MODEL_CACHE_DIR: /models
+      PREPROCESS_NORMALIZE_MAX_SECONDS: ${PREPROCESS_NORMALIZE_MAX_SECONDS:-45}
+      SEPARATOR_PROFILE: ${SEPARATOR_PROFILE:-demucs}
+      SEPARATOR_MODEL_OVERRIDE: ${SEPARATOR_MODEL_OVERRIDE:-}
+      SEPARATOR_MODEL_DIR: /models/separators
+      SEPARATOR_CACHE_DIR: /tmp/voiceprint-separator-cache
+      SEARCH_STRATEGY: ${SEARCH_STRATEGY:-hybrid}
+      SEARCH_HYBRID_BEST_WEIGHT: ${SEARCH_HYBRID_BEST_WEIGHT:-0.7}
+      SEARCH_HYBRID_CENTROID_WEIGHT: ${SEARCH_HYBRID_CENTROID_WEIGHT:-0.3}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_SERVICE_NAME: ${WORKER_OTEL_SERVICE_NAME:-voiceprint-worker}
+      HF_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - model-cache:/models
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      db-init:
+        condition: service_completed_successfully
+    networks:
+      - voiceprint-net
+
+  db:
+    image: pgvector/pgvector:pg16
+    pull_policy: always
+    container_name: voiceprint-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: voiceprint
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-voiceprint}
+      POSTGRES_DB: voiceprint
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voiceprint"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - voiceprint-net
+
+  db-init:
+    image: pgvector/pgvector:pg16
+    pull_policy: always
+    container_name: voiceprint-db-init
+    restart: "no"
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-voiceprint}
+    depends_on:
+      db:
+        condition: service_healthy
+    command:
+      - sh
+      - -c
+      - |
+        psql -h db -U voiceprint -d voiceprint <<'SQL'
+        CREATE EXTENSION IF NOT EXISTS vector;
+
+        CREATE TABLE IF NOT EXISTS speakers (
+            id SERIAL PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            description TEXT,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS audio_assets (
+            id SERIAL PRIMARY KEY,
+            speaker_id INTEGER REFERENCES speakers(id) ON DELETE SET NULL,
+            original_filename VARCHAR(512) NOT NULL,
+            storage_key VARCHAR(512) NOT NULL,
+            duration_seconds REAL,
+            sample_rate INTEGER,
+            has_speech BOOLEAN DEFAULT TRUE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE TABLE IF NOT EXISTS embeddings (
+            id SERIAL PRIMARY KEY,
+            speaker_id INTEGER NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
+            audio_asset_id INTEGER NOT NULL REFERENCES audio_assets(id) ON DELETE CASCADE,
+            vector vector,
+            model_version VARCHAR(100) NOT NULL DEFAULT 'ecapa-tdnn-v1',
+            embedding_dim INTEGER NOT NULL DEFAULT 192,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_embeddings_speaker ON embeddings (speaker_id);
+        CREATE INDEX IF NOT EXISTS idx_audio_assets_speaker ON audio_assets (speaker_id);
+        CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings (model_version, embedding_dim);
+        SQL
+    networks:
+      - voiceprint-net
+
+  redis:
+    image: redis:7-alpine
+    pull_policy: always
+    container_name: voiceprint-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - voiceprint-net
+
+  minio:
+    image: minio/minio:latest
+    pull_policy: always
+    container_name: voiceprint-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    networks:
+      - voiceprint-net
+
+volumes:
+  pgdata:
+  redis-data:
+  minio-data:
+  model-cache:
+
+networks:
+  voiceprint-net:
+    driver: bridge

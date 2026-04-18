@@ -1,0 +1,99 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* ── Light mode ─────────────────────────────────────── */
+:root {
+  --radius: 0.75rem;
+  --background: oklch(0.985 0.006 258);
+  --foreground: oklch(0.145 0.04 258);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0.04 258);
+  --primary: oklch(0.555 0.22 258);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.948 0.012 258);
+  --secondary-foreground: oklch(0.35 0.025 258);
+  --muted: oklch(0.948 0.010 258);
+  --muted-foreground: oklch(0.52 0.022 258);
+  --accent: oklch(0.948 0.010 258);
+  --accent-foreground: oklch(0.35 0.025 258);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.888 0.014 258);
+  --input: oklch(0.888 0.014 258);
+  --ring: oklch(0.555 0.22 258);
+  --success: oklch(0.6966 0.1701 150.069);
+}
+
+/* ── Dark mode: deep navy-slate, not pure black ──────── */
+.dark {
+  --background: oklch(0.18 0.028 258);
+  --foreground: oklch(0.948 0.008 258);
+  --card: oklch(0.225 0.028 258);
+  --card-foreground: oklch(0.948 0.008 258);
+  --primary: oklch(0.648 0.21 258);
+  --primary-foreground: oklch(0.18 0.028 258);
+  --secondary: oklch(0.285 0.026 258);
+  --secondary-foreground: oklch(0.90 0.008 258);
+  --muted: oklch(0.278 0.024 258);
+  --muted-foreground: oklch(0.655 0.018 258);
+  --accent: oklch(0.285 0.026 258);
+  --accent-foreground: oklch(0.90 0.008 258);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 11%);
+  --input: oklch(1 0 0 / 9%);
+  --ring: oklch(0.648 0.21 258);
+  --success: oklch(0.723 0.19 150.069);
+}
+
+body {
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* ── Custom animation keyframes ─────────────────────── */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes shimmer-bar {
+  0%   { left: -45%; }
+  100% { left: 115%; }
+}
+
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 40%, transparent); }
+  70%  { box-shadow: 0 0 0 8px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+

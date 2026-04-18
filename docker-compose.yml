@@ -1,0 +1,149 @@
+services:
+  frontend:
+    build: ./frontend
+    container_name: voiceprint-frontend
+    restart: unless-stopped
+    ports:
+      - "3010:3000"
+    environment:
+      - NODE_ENV=production
+      - AI_SERVICE_URL=http://ai-service:8000
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://192.168.1.100:3301
+      - OTEL_SERVICE_NAME=voiceprint-frontend
+    depends_on:
+      ai-service:
+        condition: service_healthy
+    networks:
+      - voiceprint-net
+
+  ai-service:
+    build: ./ai-service
+    container_name: voiceprint-ai
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://voiceprint:voiceprint@db:5432/voiceprint
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=voiceprint-audio
+      - MODEL_CACHE_DIR=/models
+      - PREPROCESS_NORMALIZE_MAX_SECONDS=${PREPROCESS_NORMALIZE_MAX_SECONDS:-45}
+      - SEPARATOR_PROFILE=${SEPARATOR_PROFILE:-demucs}
+      - SEPARATOR_MODEL_OVERRIDE=${SEPARATOR_MODEL_OVERRIDE:-}
+      - SEPARATOR_MODEL_DIR=/models/separators
+      - SEPARATOR_CACHE_DIR=/tmp/voiceprint-separator-cache
+      - SEARCH_STRATEGY=${SEARCH_STRATEGY:-hybrid}
+      - SEARCH_HYBRID_BEST_WEIGHT=${SEARCH_HYBRID_BEST_WEIGHT:-0.7}
+      - SEARCH_HYBRID_CENTROID_WEIGHT=${SEARCH_HYBRID_CENTROID_WEIGHT:-0.3}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://192.168.1.100:3301
+      - OTEL_SERVICE_NAME=voiceprint-ai-service
+    volumes:
+      - model-cache:/models
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - voiceprint-net
+
+  worker:
+    build: ./ai-service
+    container_name: voiceprint-worker
+    restart: unless-stopped
+    command: ["python", "-m", "dramatiq", "app.worker.tasks"]
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://voiceprint:voiceprint@db:5432/voiceprint
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET=voiceprint-audio
+      - MODEL_CACHE_DIR=/models
+      - PREPROCESS_NORMALIZE_MAX_SECONDS=${PREPROCESS_NORMALIZE_MAX_SECONDS:-45}
+      - SEPARATOR_PROFILE=${SEPARATOR_PROFILE:-demucs}
+      - SEPARATOR_MODEL_OVERRIDE=${SEPARATOR_MODEL_OVERRIDE:-}
+      - SEPARATOR_MODEL_DIR=/models/separators
+      - SEPARATOR_CACHE_DIR=/tmp/voiceprint-separator-cache
+      - SEARCH_STRATEGY=${SEARCH_STRATEGY:-hybrid}
+      - SEARCH_HYBRID_BEST_WEIGHT=${SEARCH_HYBRID_BEST_WEIGHT:-0.7}
+      - SEARCH_HYBRID_CENTROID_WEIGHT=${SEARCH_HYBRID_CENTROID_WEIGHT:-0.3}
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://192.168.1.100:3301
+      - OTEL_SERVICE_NAME=voiceprint-worker
+    volumes:
+      - model-cache:/models
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - voiceprint-net
+
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: voiceprint-db
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=voiceprint
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-voiceprint}
+      - POSTGRES_DB=voiceprint
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U voiceprint"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - voiceprint-net
+
+  redis:
+    image: redis:7-alpine
+    container_name: voiceprint-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - voiceprint-net
+
+  minio:
+    image: minio/minio:latest
+    container_name: voiceprint-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9001:9001"
+    networks:
+      - voiceprint-net
+
+volumes:
+  pgdata:
+  redis-data:
+  minio-data:
+  model-cache:
+
+networks:
+  voiceprint-net:
+    driver: bridge

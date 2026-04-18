@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - "ai-service/**"
+      - "frontend/**"
+      - "db/**"
+      - "docker-compose.yml"
+      - "portainer-stack.yml"
+      - ".gitignore"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/**"
+      - "ai-service/**"
+      - "frontend/**"
+      - "db/**"
+      - "docker-compose.yml"
+      - "portainer-stack.yml"
+      - ".gitignore"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Build frontend
+        run: npm run build
+
+  python-syntax:
+    name: Python Syntax
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Compile Python sources
+        run: python -m compileall ai-service/app ai-service/sitecustomize.py tests
+
+  compose-config:
+    name: Docker Compose Config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        run: docker compose -f docker-compose.yml config > /dev/null
+
+      - name: Validate portainer-stack.yml
+        run: docker compose -f portainer-stack.yml config > /dev/null

@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# Environment
+.env
+.env.local
+
+# Build
+.next/
+frontend/.next/
+frontend/out/
+ai-service/*.egg-info/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model cache (large files)
+ai-service/models/
+
+# Docker volumes (if local)
+pgdata/
+minio-data/
+redis-data/
+
+# Generated test artifacts
+test/
+tests/*.wav
+tests/output/
+tmpapitest/
+
+# Local temporary benchmark/model outputs
+.tmp-bench/
+.tmp-mdx-models/
+.tmp-mdx-out/
