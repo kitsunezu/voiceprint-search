@@ -95,20 +95,69 @@ def _extract_first_forwarded_ip(value: str) -> str:
             if not part.lower().startswith("for="):
                 continue
 
-            token = part[4:].strip().strip('"')
-            if not token or token.lower() == "unknown":
+            token = _normalize_ip_token(part[4:])
+            if not token:
                 continue
-
-            if token.startswith("["):
-                end = token.find("]")
-                return token[1:end] if end >= 0 else token[1:]
-
-            if token.count(":") == 1 and token.replace(":", "").replace(".", "").isdigit():
-                return token.split(":", 1)[0]
 
             return token
 
     return ""
+
+
+def _normalize_ip_token(value: str) -> str:
+    token = value.strip().strip('"')
+    if not token or token.lower() == "unknown":
+        return ""
+
+    if token.startswith("["):
+        end = token.find("]")
+        return token[1:end] if end >= 0 else token[1:]
+
+    if token.count(":") == 1 and token.replace(":", "").replace(".", "").isdigit():
+        return token.split(":", 1)[0]
+
+    return token
+
+
+def _split_forwarded_for(value: str) -> list[str]:
+    return [
+        token
+        for token in (_normalize_ip_token(segment) for segment in value.split(","))
+        if token
+    ]
+
+
+def _is_internal_ip(value: str) -> bool:
+    if "." in value:
+        parts = value.split(".")
+        if len(parts) == 4 and all(part.isdigit() for part in parts):
+            first = int(parts[0])
+            second = int(parts[1])
+            return (
+                first == 10
+                or first == 127
+                or (first == 169 and second == 254)
+                or (first == 172 and 16 <= second <= 31)
+                or (first == 192 and second == 168)
+                or (first == 100 and 64 <= second <= 127)
+            )
+
+    lowered = value.lower()
+    return (
+        lowered == "::1"
+        or lowered == "::"
+        or lowered.startswith("fc")
+        or lowered.startswith("fd")
+        or lowered.startswith("fe80:")
+    )
+
+
+def _pick_best_client_ip(*candidates: str) -> str:
+    normalized = [candidate for candidate in candidates if candidate]
+    for candidate in normalized:
+        if not _is_internal_ip(candidate):
+            return candidate
+    return normalized[0] if normalized else ""
 
 def _extract_client_network_context(scope: dict) -> tuple[str, str]:
     raw_headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
@@ -122,13 +171,15 @@ def _extract_client_network_context(scope: dict) -> tuple[str, str]:
     real_ip = headers.get("x-real-ip", "").strip()
     forwarded = headers.get("forwarded", "").strip()
     forwarded_ip = _extract_first_forwarded_ip(forwarded)
+    internal_forwarded_candidates = _split_forwarded_for(internal_forwarded_for)
+    forwarded_candidates = _split_forwarded_for(forwarded_for)
 
-    ip = (
-        internal_real_ip
-        or real_ip
-        or (internal_forwarded_for.split(",")[0].strip() if internal_forwarded_for else "")
-        or (forwarded_for.split(",")[0].strip() if forwarded_for else "")
-        or forwarded_ip
+    ip = _pick_best_client_ip(
+        _normalize_ip_token(internal_real_ip),
+        *internal_forwarded_candidates,
+        _normalize_ip_token(real_ip),
+        *forwarded_candidates,
+        forwarded_ip,
     )
     if not ip:
         client = scope.get("client")

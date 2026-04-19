@@ -2,8 +2,63 @@ import { NextRequest } from "next/server";
 
 const AI_BASE = process.env.AI_SERVICE_URL ?? "http://localhost:8000";
 
-function getFirstForwardedIp(value: string | null): string {
-  return value?.split(",")[0]?.trim() ?? "";
+function normalizeIpToken(value: string | null): string {
+  const token = value?.trim().replace(/^"|"$/g, "") ?? "";
+  if (!token || token.toLowerCase() === "unknown") return "";
+
+  if (token.startsWith("[")) {
+    const end = token.indexOf("]");
+    return end >= 0 ? token.slice(1, end) : token.slice(1);
+  }
+
+  if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(token)) {
+    return token.split(":")[0] ?? "";
+  }
+
+  return token;
+}
+
+function getForwardedForCandidates(value: string | null): string[] {
+  if (!value) return [];
+
+  return value
+    .split(",")
+    .map((segment) => normalizeIpToken(segment))
+    .filter(Boolean);
+}
+
+function isInternalIp(value: string): boolean {
+  const ipv4 = value.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const first = Number(ipv4[1]);
+    const second = Number(ipv4[2]);
+
+    return (
+      first === 10 ||
+      first === 127 ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 168) ||
+      (first === 100 && second >= 64 && second <= 127)
+    );
+  }
+
+  const lowered = value.toLowerCase();
+  return (
+    lowered === "::1" ||
+    lowered === "::" ||
+    lowered.startsWith("fc") ||
+    lowered.startsWith("fd") ||
+    lowered.startsWith("fe80:")
+  );
+}
+
+function pickBestClientIp(candidates: Array<string | null | undefined>): string {
+  const normalized = candidates
+    .map((candidate) => normalizeIpToken(candidate ?? null))
+    .filter(Boolean);
+
+  return normalized.find((candidate) => !isInternalIp(candidate)) ?? normalized[0] ?? "";
 }
 
 function getIpFromForwardedHeader(value: string | null): string {
@@ -13,17 +68,8 @@ function getIpFromForwardedHeader(value: string | null): string {
     const match = segment.match(/for=([^;]+)/i);
     if (!match) continue;
 
-    const token = match[1].trim().replace(/^"|"$/g, "");
-    if (!token || token.toLowerCase() === "unknown") continue;
-
-    if (token.startsWith("[")) {
-      const end = token.indexOf("]");
-      return end >= 0 ? token.slice(1, end) : token.slice(1);
-    }
-
-    if (/^\d+\.\d+\.\d+\.\d+:\d+$/.test(token)) {
-      return token.split(":")[0] ?? "";
-    }
+    const token = normalizeIpToken(match[1]);
+    if (!token) continue;
 
     return token;
   }
@@ -32,16 +78,19 @@ function getIpFromForwardedHeader(value: string | null): string {
 }
 
 export function getForwardedClientIp(request: NextRequest): string {
-  const realIp = request.headers.get("x-real-ip")?.trim();
-  if (realIp) return realIp;
-
-  const cfConnectingIp = request.headers.get("cf-connecting-ip")?.trim();
-  if (cfConnectingIp) return cfConnectingIp;
-
+  const cfConnectingIp = normalizeIpToken(request.headers.get("cf-connecting-ip"));
+  const realIp = normalizeIpToken(request.headers.get("x-real-ip"));
+  const forwardedForCandidates = getForwardedForCandidates(
+    request.headers.get("x-forwarded-for"),
+  );
   const forwardedIp = getIpFromForwardedHeader(request.headers.get("forwarded"));
-  if (forwardedIp) return forwardedIp;
 
-  return getFirstForwardedIp(request.headers.get("x-forwarded-for"));
+  return pickBestClientIp([
+    cfConnectingIp,
+    ...forwardedForCandidates,
+    forwardedIp,
+    realIp,
+  ]);
 }
 
 export function buildAiProxyHeaders(

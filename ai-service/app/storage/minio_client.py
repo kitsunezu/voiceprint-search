@@ -26,6 +26,15 @@ def upload_file(client: Minio, object_name: str, file_path: str, content_type: s
     return object_name
 
 
+def download_file(client: Minio, object_name: str, file_path: str) -> str:
+    client.fget_object(
+        settings.minio_bucket,
+        object_name,
+        file_path,
+    )
+    return file_path
+
+
 def delete_objects_by_prefix(client: Minio, prefix: str) -> None:
     """Delete all objects whose key starts with *prefix*."""
     from minio.deleteobjects import DeleteObject
