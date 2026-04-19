@@ -7,6 +7,9 @@ const VERIFY_TOTAL_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
 const VERIFY_TOTAL_UPLOAD_LIMIT_MB = Math.floor(VERIFY_TOTAL_UPLOAD_LIMIT_BYTES / (1024 * 1024));
 const VERIFY_JOB_POLL_INTERVAL_MS = 1000;
 const VERIFY_JOB_MAX_POLLS = 900;
+const ENROLL_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
+const ENROLL_JOB_POLL_INTERVAL_MS = 1000;
+const ENROLL_JOB_MAX_POLLS = 120;
 
 export interface SearchMatch {
   speaker_id: number;
@@ -66,7 +69,7 @@ export type Speaker = {
   created_at: string;
 };
 
-export type FileStatus = "pending" | "uploading" | "queueing" | "done" | "error";
+export type FileStatus = "pending" | "uploading" | "processing" | "done" | "error";
 
 export type QueuedFile = {
   key: string;
@@ -76,8 +79,6 @@ export type QueuedFile = {
   uploadProgress?: number;
   jobId?: string;
 };
-
-type EnrollJobAccepted = { job_id?: string; speaker_id?: number };
 
 interface EnrollJobResult {
   speaker_id: number;
@@ -95,8 +96,6 @@ interface EnrollJobState {
   error?: string | null;
   result?: EnrollJobResult | null;
 }
-
-type StagedEnrollJob = { itemKey: string; jobId: string };
 
 type CreatedSpeaker = {
   id: number;
@@ -211,6 +210,24 @@ export function BackgroundTasksProvider({ children }: { children: React.ReactNod
   const [enrollDupDialogSpeaker, setEnrollDupDialogSpeaker] = useState<Speaker | null>(null);
   const [enrollDropdownOpen, setEnrollDropdownOpen] = useState(false);
   const [enrollSearchQuery, setEnrollSearchQuery] = useState("");
+
+  function updateEnrollItem(itemKey: string, updater: (item: QueuedFile) => QueuedFile) {
+    setEnrollQueue((previous) =>
+      previous.map((item) => (item.key === itemKey ? updater(item) : item))
+    );
+  }
+
+  function getEnrollProcessingMessage(stage: string | null | undefined) {
+    switch ((stage ?? "").trim()) {
+      case "persist":
+        return tEnroll("stage_persist");
+      case "upload":
+      case "uploaded":
+      case "queued":
+      default:
+        return tEnroll("processing_status");
+    }
+  }
 
   useEffect(() => {
     fetch("/api/speakers")
@@ -431,32 +448,34 @@ export function BackgroundTasksProvider({ children }: { children: React.ReactNod
     setEnrollQueue((previous) => previous.filter((item) => item.key !== key));
   }
 
-  async function createEnrollJob(itemKey: string, formData: FormData): Promise<EnrollJobAccepted> {
+  async function createEnrollJob(itemKey: string, formData: FormData): Promise<EnrollJobState> {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", "/api/enroll/jobs");
       xhr.responseType = "json";
+      xhr.timeout = ENROLL_REQUEST_TIMEOUT_MS;
 
       xhr.upload.onprogress = (event) => {
         if (event.lengthComputable && event.total > 0) {
           const percent = Math.min(100, Math.max(0, (event.loaded / event.total) * 100));
-          setEnrollQueue((previous) =>
-            previous.map((item) =>
-              item.key === itemKey
-                ? { ...item, status: "uploading", uploadProgress: percent, message: undefined }
-                : item
-            )
+          updateEnrollItem(itemKey, (item) =>
+            item.status === "error"
+              ? item
+              : { ...item, status: "uploading", uploadProgress: percent, message: undefined }
           );
         }
       };
 
       xhr.upload.onloadend = () => {
-        setEnrollQueue((previous) =>
-          previous.map((item) =>
-            item.key === itemKey && item.status !== "error"
-              ? { ...item, status: "queueing", uploadProgress: 100, message: undefined }
-              : item
-          )
+        updateEnrollItem(itemKey, (item) =>
+          item.status === "error"
+            ? item
+            : {
+                ...item,
+                status: "processing",
+                uploadProgress: 100,
+                message: tEnroll("processing_status"),
+              }
         );
       };
 
@@ -472,7 +491,7 @@ export function BackgroundTasksProvider({ children }: { children: React.ReactNod
           })();
 
         if (xhr.status >= 200 && xhr.status < 300) {
-          resolve(body as EnrollJobAccepted);
+          resolve(body as EnrollJobState);
           return;
         }
 
@@ -487,81 +506,122 @@ export function BackgroundTasksProvider({ children }: { children: React.ReactNod
         reject(new Error(tCommon("unknown_error")));
       };
 
+      xhr.ontimeout = () => {
+        reject(new Error(tEnroll("job_timeout")));
+      };
+
       xhr.send(formData);
     });
   }
 
-  async function startEnrollJob(jobId: string): Promise<EnrollJobState> {
-    const response = await fetch(`/api/enroll/jobs/${jobId}/start`, {
-      method: "POST",
-    });
-    const data =
-      ((await response.json().catch(() => ({ detail: response.statusText }))) as EnrollJobState & {
-        detail?: string;
-      }) ?? null;
+  async function pollEnrollJob(itemKey: string, jobId: string, initialState?: EnrollJobState) {
+    let currentState = initialState;
 
-    if (!response.ok || !data) {
-      throw new Error(data?.detail ?? tCommon("unknown_error"));
+    for (let attempt = 0; attempt < ENROLL_JOB_MAX_POLLS; attempt += 1) {
+      if (!currentState || attempt > 0) {
+        const response = await fetch(`/api/enroll/jobs/${jobId}`, {
+          method: "GET",
+          cache: "no-store",
+        });
+        const data =
+          ((await response.json().catch(() => ({ detail: response.statusText }))) as EnrollJobState & {
+            detail?: string;
+          }) ?? null;
+
+        if (!response.ok || !data) {
+          throw new Error(data?.detail ?? tCommon("unknown_error"));
+        }
+
+        currentState = data;
+      }
+
+      if (!currentState) {
+        throw new Error(tCommon("unknown_error"));
+      }
+
+      if (currentState.status === "succeeded" || currentState.status === "failed") {
+        return currentState;
+      }
+
+      updateEnrollItem(itemKey, (item) => ({
+        ...item,
+        status: "processing",
+        jobId,
+        message: getEnrollProcessingMessage(currentState?.stage),
+      }));
+
+      await sleep(ENROLL_JOB_POLL_INTERVAL_MS);
+      currentState = undefined;
     }
 
-    return data;
+    throw new Error(tEnroll("job_timeout"));
   }
 
-  async function stagePendingUpload(
+  async function processEnrollItem(
     item: QueuedFile,
     speakerId: number | null,
-    speakerName: string
-  ): Promise<StagedEnrollJob | null> {
-    setEnrollQueue((previous) =>
-      previous.map((queued) =>
-        queued.key === item.key
-          ? { ...queued, status: "uploading", uploadProgress: 0, message: undefined }
-          : queued
-      )
-    );
+    speakerName: string,
+  ): Promise<boolean> {
+    updateEnrollItem(item.key, (queued) => ({
+      ...queued,
+      status: "uploading",
+      uploadProgress: 0,
+      message: undefined,
+    }));
 
     const form = new FormData();
     form.append("audio", item.file);
     form.append("speaker_name", speakerName);
-    form.append("auto_start", "false");
     if (speakerId !== null) {
       form.append("speaker_id", String(speakerId));
     }
 
     try {
-      const data = await createEnrollJob(item.key, form);
-      if (!data.job_id) {
-        throw new Error(tVerify("job_missing_result"));
+      const created = await createEnrollJob(item.key, form);
+      if (!created.job_id) {
+        throw new Error(tEnroll("job_missing_result"));
       }
 
-      setEnrollQueue((previous) =>
-        previous.map((queued) =>
-          queued.key === item.key
-            ? {
-                ...queued,
-                status: "queueing",
-                uploadProgress: 100,
-                jobId: data.job_id,
-                message: undefined,
-              }
-            : queued
-        )
-      );
+      updateEnrollItem(item.key, (queued) => ({
+        ...queued,
+        status: created.status === "succeeded" ? "done" : "processing",
+        uploadProgress: 100,
+        jobId: created.job_id,
+        message:
+          created.status === "succeeded"
+            ? undefined
+            : getEnrollProcessingMessage(created.stage),
+      }));
 
-      return { itemKey: item.key, jobId: data.job_id };
+      const finished =
+        created.status === "failed"
+          ? created
+          : created.status === "succeeded" && created.result
+          ? created
+          : await pollEnrollJob(item.key, created.job_id, created);
+
+      if (finished.status === "failed") {
+        throw new Error(finished.error ?? tEnroll("job_failed"));
+      }
+      if (!finished.result) {
+        throw new Error(tEnroll("job_missing_result"));
+      }
+
+      updateEnrollItem(item.key, (queued) => ({
+        ...queued,
+        status: "done",
+        uploadProgress: 100,
+        jobId: finished.job_id,
+        message: undefined,
+      }));
+      return true;
     } catch (error: unknown) {
-      setEnrollQueue((previous) =>
-        previous.map((queued) =>
-          queued.key === item.key
-            ? {
-                ...queued,
-                status: "error",
-                message: error instanceof Error ? error.message : tCommon("unknown_error"),
-              }
-            : queued
-        )
-      );
-      return null;
+      updateEnrollItem(item.key, (queued) => ({
+        ...queued,
+        status: "error",
+        message: error instanceof Error ? error.message : tCommon("unknown_error"),
+      }));
+      return false;
     }
   }
 
@@ -588,7 +648,6 @@ export function BackgroundTasksProvider({ children }: { children: React.ReactNod
 
     let resolvedId: number | null =
       overrideId !== undefined ? overrideId : enrollSelectedSpeakerId;
-    const stagedJobs: StagedEnrollJob[] = [];
     const pendingItems = enrollQueue.filter((item) => item.status === "pending");
     const speakerName = enrollName.trim();
 
@@ -613,61 +672,11 @@ export function BackgroundTasksProvider({ children }: { children: React.ReactNod
       }
     }
 
-    if (pendingItems.length > 0) {
-      const uploadResults = await Promise.all(
-        pendingItems.map((item) => stagePendingUpload(item, resolvedId, speakerName))
-      );
-
-      for (const result of uploadResults) {
-        if (result) {
-          stagedJobs.push(result);
-        }
-      }
-    }
-
-    await Promise.all(
-      stagedJobs.map(async (staged) => {
-        setEnrollQueue((previous) =>
-          previous.map((item) =>
-            item.key === staged.itemKey
-              ? { ...item, status: "queueing", message: undefined }
-              : item
-          )
-        );
-
-        try {
-          const stored = await startEnrollJob(staged.jobId);
-          if (stored.status === "failed") {
-            throw new Error(stored.error ?? tVerify("job_failed"));
-          }
-          if (!stored.result) {
-            throw new Error(tVerify("job_missing_result"));
-          }
-
-          setEnrollQueue((previous) =>
-            previous.map((item) =>
-              item.key === staged.itemKey
-                ? { ...item, status: "done", uploadProgress: 100, message: undefined }
-                : item
-            )
-          );
-        } catch (error: unknown) {
-          setEnrollQueue((previous) =>
-            previous.map((item) =>
-              item.key === staged.itemKey
-                ? {
-                    ...item,
-                    status: "error",
-                    message: error instanceof Error ? error.message : tCommon("unknown_error"),
-                  }
-                : item
-            )
-          );
-        }
-      })
+    const results = await Promise.all(
+      pendingItems.map((item) => processEnrollItem(item, resolvedId, speakerName))
     );
 
-    if (stagedJobs.length > 0) {
+    if (results.some(Boolean)) {
       fetch("/api/speakers")
         .then((response) => response.json())
         .then((data: { speakers?: Speaker[] }) => setEnrollSpeakers(data.speakers ?? []))
@@ -726,7 +735,9 @@ export function BackgroundTasksProvider({ children }: { children: React.ReactNod
     : enrollSpeakers;
   const pendingCount = enrollQueue.filter((item) => item.status === "pending").length;
   const canEnroll = !!enrollName.trim() && pendingCount > 0 && !enrollIsRunning;
-  const allDone = enrollQueue.length > 0 && enrollQueue.every((item) => item.status === "done");
+  const allDone =
+    enrollQueue.length > 0 &&
+    enrollQueue.every((item) => item.status === "done" || item.status === "error");
   const hasSpeaker = !!(enrollName && !enrollDropdownOpen);
 
   return (

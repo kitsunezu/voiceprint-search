@@ -208,8 +208,8 @@ async def create_enroll_job_endpoint(
     minio_client: Minio = Depends(get_minio),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create an asynchronous enroll job and return a job ID."""
-    del model
+    """Create an enroll job that uploads and finalizes within the same request."""
+    del model, auto_start
 
     if not audio.filename or not validate_extension(audio.filename):
         raise HTTPException(400, "Unsupported audio format")
@@ -222,6 +222,17 @@ async def create_enroll_job_endpoint(
 
     job_id = uuid.uuid4().hex
     object_key = _build_audio_object_key(resolved_speaker_id, audio.filename, job_id[:8])
+    redis_client = get_redis_client()
+    created = create_enroll_job(redis_client, job_id)
+
+    payload = {
+        "job_id": job_id,
+        "object_key": object_key,
+        "original_filename": audio.filename,
+        "speaker_id": resolved_speaker_id,
+        "speaker_name": resolved_speaker_name,
+    }
+    store_enroll_job_payload(redis_client, job_id, payload)
 
     tmp_dir = tempfile.mkdtemp(prefix=f"enroll-job-{job_id[:8]}-")
     try:
@@ -230,37 +241,22 @@ async def create_enroll_job_endpoint(
         with open(local_path, "wb") as f:
             f.write(await audio.read())
 
-        await asyncio.to_thread(
-            upload_file,
-            minio_client,
-            object_key,
-            local_path,
-            content_type=audio.content_type or "application/octet-stream",
-        )
+        mark_enroll_job_running(redis_client, job_id, stage="upload", progress=5)
 
-        redis_client = get_redis_client()
-        created = create_enroll_job(redis_client, job_id)
+        try:
+            await asyncio.to_thread(
+                upload_file,
+                minio_client,
+                object_key,
+                local_path,
+                content_type=audio.content_type or "application/octet-stream",
+            )
+        except Exception as exc:
+            logger.exception("Failed to upload enroll audio for job %s", job_id)
+            fail_enroll_job(redis_client, job_id, error="Failed to upload audio")
+            raise HTTPException(500, "Failed to upload audio") from exc
 
-        payload = {
-            "job_id": job_id,
-            "object_key": object_key,
-            "original_filename": audio.filename,
-            "speaker_id": resolved_speaker_id,
-            "speaker_name": resolved_speaker_name,
-        }
-        store_enroll_job_payload(redis_client, job_id, payload)
-
-        if auto_start:
-            created = await _finalize_enroll_job(redis_client, job_id, payload, db)
-        else:
-            created = update_enroll_job(
-                redis_client,
-                job_id,
-                status="queued",
-                stage="uploaded",
-                progress=0,
-                error=None,
-            ) or created
+        created = await _finalize_enroll_job(redis_client, job_id, payload, db)
 
         return {
             "job_id": job_id,
@@ -269,8 +265,16 @@ async def create_enroll_job_endpoint(
             "stage": created["stage"],
             "progress": created["progress"],
             "eta_seconds": created["eta_seconds"],
+            "error": created.get("error"),
+            "result": created.get("result"),
             "poll_url": f"/api/v1/enroll/jobs/{job_id}",
         }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Failed to prepare enroll job %s", job_id)
+        fail_enroll_job(redis_client, job_id, error=str(exc))
+        raise HTTPException(500, "Failed to create enroll job") from exc
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

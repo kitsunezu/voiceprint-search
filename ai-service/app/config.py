@@ -107,6 +107,8 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin"
     minio_bucket: str = "voiceprint-audio"
     minio_secure: bool = False
+    minio_connect_timeout_seconds: float = 10.0
+    minio_read_timeout_seconds: float = 120.0
 
     model_cache_dir: str = "/models"
 

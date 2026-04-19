@@ -212,6 +212,10 @@ export default function EnrollPage() {
           onClear={clearUploadedFiles}
         />
 
+        <p className="text-xs text-muted-foreground leading-relaxed">
+          {t("processing_note")}
+        </p>
+
         {/* File queue */}
         {queue.length > 0 && (
           <div className="space-y-1.5">
@@ -223,7 +227,7 @@ export default function EnrollPage() {
                   item.status === "done" && "border-success/30 bg-success/10",
                   item.status === "error" && "border-destructive/30 bg-destructive/10",
                   item.status === "uploading" && "border-primary/30 bg-primary/10",
-                  item.status === "queueing" && "border-primary/30 bg-primary/10",
+                  item.status === "processing" && "border-primary/30 bg-primary/10",
                   item.status === "pending" && "border-border bg-background/60"
                 )}
               >
@@ -234,7 +238,7 @@ export default function EnrollPage() {
                   {item.status === "uploading" && (
                     <Loader2 className="size-4 animate-spin text-primary" />
                   )}
-                  {item.status === "queueing" && (
+                  {item.status === "processing" && (
                     <Loader2 className="size-4 animate-spin text-primary" />
                   )}
                   {item.status === "done" && <CheckCircle2 className="size-4 text-success" />}
@@ -250,18 +254,17 @@ export default function EnrollPage() {
                   >
                     {item.file.name}
                   </p>
-                  {(item.status === "uploading" || item.status === "queueing") && (
+                  {item.status === "uploading" && (
                     <div className="mt-1.5 space-y-1.5">
                       <div className="flex items-center justify-between text-[11px] text-muted-foreground">
                         <span>{tVerify("upload_progress")}</span>
-                        <span>
-                          {item.status === "queueing"
-                            ? tVerify("queueing")
-                            : `${Math.round(item.uploadProgress ?? 0)}%`}
-                        </span>
+                        <span>{`${Math.round(item.uploadProgress ?? 0)}%`}</span>
                       </div>
                       <Progress value={item.uploadProgress ?? 0} className="h-1.5" />
                     </div>
+                  )}
+                  {item.status === "processing" && item.message && (
+                    <p className="mt-1 text-xs text-muted-foreground">{item.message}</p>
                   )}
                   {item.status === "error" && item.message && (
                     <p className="mt-1 text-xs text-muted-foreground">{item.message}</p>

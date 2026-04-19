@@ -1,15 +1,24 @@
 """MinIO object-storage client."""
 
+import urllib3
+
 from minio import Minio
 from app.config import settings
 
 
 def init_minio() -> Minio:
+    http_client = urllib3.PoolManager(
+        timeout=urllib3.Timeout(
+            connect=settings.minio_connect_timeout_seconds,
+            read=settings.minio_read_timeout_seconds,
+        )
+    )
     client = Minio(
         settings.minio_endpoint,
         access_key=settings.minio_access_key,
         secret_key=settings.minio_secret_key,
         secure=settings.minio_secure,
+        http_client=http_client,
     )
     if not client.bucket_exists(settings.minio_bucket):
         client.make_bucket(settings.minio_bucket)
