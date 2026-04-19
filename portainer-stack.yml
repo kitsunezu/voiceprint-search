@@ -72,7 +72,7 @@ services:
     pull_policy: always
     container_name: voiceprint-worker
     restart: unless-stopped
-    command: ["python", "-m", "dramatiq", "app.worker.tasks"]
+    command: ["python", "-m", "dramatiq", "--processes", "1", "--threads", "1", "app.worker.tasks"]
     environment:
       DATABASE_URL: postgresql+asyncpg://voiceprint:${DB_PASSWORD:-voiceprint}@db:5432/voiceprint
       REDIS_URL: redis://redis:6379/0

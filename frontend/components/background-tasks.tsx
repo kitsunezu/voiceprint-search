@@ -672,9 +672,10 @@ export function BackgroundTasksProvider({ children }: { children: React.ReactNod
       }
     }
 
-    const results = await Promise.all(
-      pendingItems.map((item) => processEnrollItem(item, resolvedId, speakerName))
-    );
+    const results: boolean[] = [];
+    for (const item of pendingItems) {
+      results.push(await processEnrollItem(item, resolvedId, speakerName));
+    }
 
     if (results.some(Boolean)) {
       fetch("/api/speakers")
