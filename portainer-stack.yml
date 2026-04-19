@@ -142,41 +142,97 @@ services:
       - sh
       - -c
       - |
-        psql -h db -U voiceprint -d voiceprint <<'SQL'
+        psql -v ON_ERROR_STOP=1 -h db -U voiceprint -d voiceprint <<'SQL'
+        BEGIN;
+
         CREATE EXTENSION IF NOT EXISTS vector;
 
         CREATE TABLE IF NOT EXISTS speakers (
-            id SERIAL PRIMARY KEY,
-            name VARCHAR(255) NOT NULL,
-            description TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          id SERIAL PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          description TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS audio_assets (
-            id SERIAL PRIMARY KEY,
-            speaker_id INTEGER REFERENCES speakers(id) ON DELETE SET NULL,
-            original_filename VARCHAR(512) NOT NULL,
-            storage_key VARCHAR(512) NOT NULL,
-            duration_seconds REAL,
-            sample_rate INTEGER,
-            has_speech BOOLEAN DEFAULT TRUE,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          id SERIAL PRIMARY KEY,
+          speaker_id INTEGER REFERENCES speakers(id) ON DELETE SET NULL,
+          original_filename VARCHAR(512) NOT NULL,
+          storage_key VARCHAR(512) NOT NULL,
+          duration_seconds REAL,
+          sample_rate INTEGER,
+          processing_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+          processing_error TEXT,
+          processing_started_at TIMESTAMPTZ,
+          processing_finished_at TIMESTAMPTZ,
+          has_speech BOOLEAN DEFAULT TRUE,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS embeddings (
-            id SERIAL PRIMARY KEY,
-            speaker_id INTEGER NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
-            audio_asset_id INTEGER NOT NULL REFERENCES audio_assets(id) ON DELETE CASCADE,
-            vector vector,
-            model_version VARCHAR(100) NOT NULL DEFAULT 'ecapa-tdnn-v1',
-            embedding_dim INTEGER NOT NULL DEFAULT 192,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+          id SERIAL PRIMARY KEY,
+          speaker_id INTEGER NOT NULL REFERENCES speakers(id) ON DELETE CASCADE,
+          audio_asset_id INTEGER NOT NULL REFERENCES audio_assets(id) ON DELETE CASCADE,
+          vector vector,
+          model_version VARCHAR(100) NOT NULL DEFAULT 'ecapa-tdnn-v1',
+          embedding_dim INTEGER NOT NULL DEFAULT 192,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         );
+
+        ALTER TABLE speakers ADD COLUMN IF NOT EXISTS description TEXT;
+        ALTER TABLE speakers ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+        ALTER TABLE speakers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+        ALTER TABLE audio_assets ADD COLUMN IF NOT EXISTS processing_status VARCHAR(32);
+        ALTER TABLE audio_assets ADD COLUMN IF NOT EXISTS processing_error TEXT;
+        ALTER TABLE audio_assets ADD COLUMN IF NOT EXISTS processing_started_at TIMESTAMPTZ;
+        ALTER TABLE audio_assets ADD COLUMN IF NOT EXISTS processing_finished_at TIMESTAMPTZ;
+        ALTER TABLE audio_assets ADD COLUMN IF NOT EXISTS has_speech BOOLEAN DEFAULT TRUE;
+
+        UPDATE audio_assets
+        SET processing_status = CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM embeddings e
+            WHERE e.audio_asset_id = audio_assets.id
+          ) THEN 'succeeded'
+          WHEN has_speech = FALSE THEN 'no_speech'
+          ELSE 'pending'
+        END
+        WHERE processing_status IS NULL;
+
+        UPDATE audio_assets
+        SET processing_finished_at = created_at
+        WHERE processing_finished_at IS NULL
+          AND processing_status IN ('succeeded', 'no_speech');
+
+        ALTER TABLE audio_assets ALTER COLUMN processing_status SET DEFAULT 'pending';
+        ALTER TABLE audio_assets ALTER COLUMN processing_status SET NOT NULL;
+
+        ALTER TABLE embeddings ALTER COLUMN vector TYPE vector;
+        ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS model_version VARCHAR(100);
+        ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS embedding_dim INTEGER;
+
+        UPDATE embeddings
+        SET model_version = 'ecapa-tdnn-v1'
+        WHERE model_version IS NULL OR model_version = '';
+
+        UPDATE embeddings
+        SET embedding_dim = 192
+        WHERE embedding_dim IS NULL;
+
+        ALTER TABLE embeddings ALTER COLUMN model_version SET DEFAULT 'ecapa-tdnn-v1';
+        ALTER TABLE embeddings ALTER COLUMN model_version SET NOT NULL;
+        ALTER TABLE embeddings ALTER COLUMN embedding_dim SET DEFAULT 192;
+        ALTER TABLE embeddings ALTER COLUMN embedding_dim SET NOT NULL;
 
         CREATE INDEX IF NOT EXISTS idx_embeddings_speaker ON embeddings (speaker_id);
         CREATE INDEX IF NOT EXISTS idx_audio_assets_speaker ON audio_assets (speaker_id);
+        CREATE INDEX IF NOT EXISTS idx_audio_assets_processing_status ON audio_assets (processing_status);
         CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings (model_version, embedding_dim);
+
+        COMMIT;
         SQL
     networks:
       - voiceprint-net

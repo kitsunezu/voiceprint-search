@@ -156,7 +156,10 @@ The stack is designed to:
 
 - pull images from GHCR
 - initialize the database schema on first deployment
+- apply idempotent schema upgrades on redeploy for existing databases
 - persist PostgreSQL, Redis, MinIO, and model cache volumes
+
+If you deployed an older Portainer stack before the audio asset processing columns were added, redeploy the stack once so the db-init service can patch the existing PostgreSQL schema before frontend and ai-service start.
 
 Before deploying, replace the default image references or set these variables in Portainer:
 
