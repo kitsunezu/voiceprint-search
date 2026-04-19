@@ -18,6 +18,10 @@ CREATE TABLE audio_assets (
     storage_key         VARCHAR(512) NOT NULL,
     duration_seconds    REAL,
     sample_rate         INTEGER,
+    processing_status   VARCHAR(32) NOT NULL DEFAULT 'pending',
+    processing_error    TEXT,
+    processing_started_at TIMESTAMPTZ,
+    processing_finished_at TIMESTAMPTZ,
     has_speech          BOOLEAN DEFAULT TRUE,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -42,3 +46,4 @@ CREATE TABLE embeddings (
 -- Useful for per-speaker lookups
 CREATE INDEX idx_embeddings_speaker ON embeddings (speaker_id);
 CREATE INDEX idx_audio_assets_speaker ON audio_assets (speaker_id);
+CREATE INDEX idx_audio_assets_processing_status ON audio_assets (processing_status);

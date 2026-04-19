@@ -11,6 +11,7 @@ import hashlib
 import logging
 import os
 from pathlib import Path
+import signal
 import shutil
 import subprocess
 import tempfile
@@ -19,6 +20,64 @@ from app.config import SeparatorProfile, Settings, settings
 from app.core.audio import get_audio_duration, resolve_trim_window
 
 logger = logging.getLogger(__name__)
+
+
+def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=5)
+    except Exception:
+        logger.debug("Failed to terminate subprocess cleanly pid=%s", process.pid, exc_info=True)
+
+    if process.poll() is not None:
+        return
+
+    try:
+        if os.name == "posix":
+            os.killpg(process.pid, signal.SIGKILL)
+        else:
+            process.kill()
+        process.wait(timeout=5)
+    except Exception:
+        logger.debug("Failed to kill subprocess pid=%s", process.pid, exc_info=True)
+
+
+def _run_subprocess(
+    cmd: list[str],
+    *,
+    timeout: int,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        start_new_session=(os.name == "posix"),
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        _terminate_process_tree(process)
+        stdout, stderr = process.communicate()
+        raise subprocess.TimeoutExpired(exc.cmd, exc.timeout, output=stdout, stderr=stderr) from exc
+    except BaseException:
+        _terminate_process_tree(process)
+        process.communicate()
+        raise
+
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=process.returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
 def _with_repo_pythonpath(env: dict[str, str] | None = None) -> dict[str, str]:
@@ -119,12 +178,17 @@ class VocalSeparator:
             "-c:a", "pcm_s16le",
             "-y", trimmed,
         ]
-        subprocess.run(
+        result = _run_subprocess(
             cmd,
-            capture_output=True,
-            check=True,
             timeout=min(180, self.cfg.separator_timeout_seconds),
         )
+        if result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                cmd,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
         return trimmed
 
     def _run_backend(self, trimmed_path: str, work_dir: str) -> str | None:
@@ -135,24 +199,32 @@ class VocalSeparator:
         raise ValueError(f"Unsupported separator backend: {self.profile.backend}")
 
     def _run_demucs(self, trimmed_path: str, work_dir: str) -> str | None:
-        result = subprocess.run(
-            [
-                "python",
-                "-m",
-                "demucs",
-                "--two-stems",
-                "vocals",
-                "-n",
-                self.profile.model,
-                "--clip-mode",
-                "rescale",
-                "-o",
-                work_dir,
-                trimmed_path,
-            ],
-            capture_output=True,
-            timeout=self.cfg.separator_timeout_seconds,
-        )
+        cmd = [
+            "python",
+            "-m",
+            "demucs",
+            "--two-stems",
+            "vocals",
+            "-n",
+            self.profile.model,
+            "--clip-mode",
+            "rescale",
+            "-o",
+            work_dir,
+            trimmed_path,
+        ]
+        try:
+            result = _run_subprocess(
+                cmd,
+                timeout=self.cfg.separator_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "Demucs timed out after %ss for profile=%s — falling back.",
+                self.cfg.separator_timeout_seconds,
+                self.profile.id,
+            )
+            return None
         if result.returncode != 0:
             stderr = result.stderr.decode(errors="replace")[-600:]
             logger.warning(
@@ -177,27 +249,35 @@ class VocalSeparator:
         return str(candidates[0])
 
     def _run_audio_separator(self, trimmed_path: str, work_dir: str) -> str | None:
-        result = subprocess.run(
-            [
-                "audio-separator",
-                trimmed_path,
-                "--output_dir",
-                work_dir,
-                "--model_file_dir",
-                self.model_dir,
-                "--single_stem",
-                "Vocals",
-                "--sample_rate",
-                "16000",
-                "--output_format",
-                "WAV",
-                "-m",
-                self.profile.model,
-            ],
-            env=_with_repo_pythonpath(),
-            capture_output=True,
-            timeout=self.cfg.separator_timeout_seconds,
-        )
+        cmd = [
+            "audio-separator",
+            trimmed_path,
+            "--output_dir",
+            work_dir,
+            "--model_file_dir",
+            self.model_dir,
+            "--single_stem",
+            "Vocals",
+            "--sample_rate",
+            "16000",
+            "--output_format",
+            "WAV",
+            "-m",
+            self.profile.model,
+        ]
+        try:
+            result = _run_subprocess(
+                cmd,
+                env=_with_repo_pythonpath(),
+                timeout=self.cfg.separator_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "audio-separator timed out after %ss for profile=%s — falling back.",
+                self.cfg.separator_timeout_seconds,
+                self.profile.id,
+            )
+            return None
         if result.returncode != 0:
             stderr = result.stderr.decode(errors="replace")[-600:]
             logger.warning(

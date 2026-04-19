@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { Loader2 } from "lucide-react";
 import { AudioUploader } from "@/components/AudioUploader";
+import { useBackgroundTasks } from "@/components/background-tasks";
 import { ModelSelector } from "@/components/ModelSelector";
 import { PreprocessControls } from "@/components/PreprocessControls";
 import { ProcessingInsights } from "@/components/ProcessingInsights";
@@ -12,65 +12,28 @@ import { VoiceProfileComparison } from "@/components/VoiceProfileComparison";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 
-const VERIFY_TOTAL_UPLOAD_LIMIT_BYTES = 50 * 1024 * 1024;
-const VERIFY_TOTAL_UPLOAD_LIMIT_MB = Math.floor(VERIFY_TOTAL_UPLOAD_LIMIT_BYTES / (1024 * 1024));
-const VERIFY_JOB_POLL_INTERVAL_MS = 1000;
-const VERIFY_JOB_MAX_POLLS = 900;
-
-interface VoiceDimension {
-  key: string;
-  audio_a: number;
-  audio_b: number;
-  difference: number;
-  audio_a_value: number;
-  audio_b_value: number;
-  unit: string;
-}
-
-interface VoiceCharacteristics {
-  profile_similarity: number;
-  summary: string;
-  dimensions: VoiceDimension[];
-}
-
-interface VerifyResult {
-  score: number;
-  probability: number;
-  is_same_speaker: boolean;
-  threshold: number;
-  elapsed_seconds?: number;
-  model_used?: string;
-  strategy?: string;
-  voice_characteristics?: VoiceCharacteristics;
-}
-
-interface VerifyJobState {
-  job_id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
-  stage: string;
-  progress: number;
-  eta_seconds: number | null;
-  error?: string | null;
-  result?: VerifyResult;
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 export default function VerifyPage() {
   const t = useTranslations("verify");
-  const tCommon = useTranslations("common");
   const tPreprocess = useTranslations("preprocess");
-  const [fileA, setFileA] = useState<File | null>(null);
-  const [fileB, setFileB] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<VerifyResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [uploadProgress, setUploadProgress] = useState(0);
-  const [jobState, setJobState] = useState<VerifyJobState | null>(null);
-  const [model, setModel] = useState("");
-  const [separateVocals, setSeparateVocals] = useState(true);
+  const { verify } = useBackgroundTasks();
+  const {
+    fileA,
+    fileB,
+    loading,
+    result,
+    error,
+    uploadProgress,
+    jobState,
+    model,
+    separateVocals,
+    setFileA,
+    setFileB,
+    clearFileA,
+    clearFileB,
+    setModel,
+    setSeparateVocals,
+    start,
+  } = verify;
 
   function getStageLabel(stage: string | undefined): string {
     switch (stage) {
@@ -99,122 +62,6 @@ export default function VerifyPage() {
     }
   }
 
-  async function createVerifyJob(formData: FormData): Promise<VerifyJobState> {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/api/verify/jobs");
-      xhr.responseType = "json";
-
-      xhr.upload.onprogress = (event) => {
-        if (event.lengthComputable && event.total > 0) {
-          const percent = (event.loaded / event.total) * 100;
-          setUploadProgress(Math.min(100, Math.max(0, percent)));
-        }
-      };
-
-      xhr.onload = () => {
-        const body =
-          (xhr.response as Record<string, unknown> | null) ??
-          (() => {
-            try {
-              return JSON.parse(xhr.responseText || "{}");
-            } catch {
-              return {};
-            }
-          })();
-
-        if (xhr.status >= 200 && xhr.status < 300) {
-          setUploadProgress(100);
-          resolve(body as unknown as VerifyJobState);
-          return;
-        }
-
-        const detail =
-          typeof body?.detail === "string"
-            ? body.detail
-            : xhr.statusText || tCommon("unknown_error");
-        reject(new Error(detail));
-      };
-
-      xhr.onerror = () => {
-        reject(new Error(tCommon("unknown_error")));
-      };
-
-      xhr.send(formData);
-    });
-  }
-
-  async function pollVerifyJob(jobId: string): Promise<VerifyJobState> {
-    for (let attempt = 0; attempt < VERIFY_JOB_MAX_POLLS; attempt += 1) {
-      const res = await fetch(`/api/verify/jobs/${jobId}`, {
-        method: "GET",
-        cache: "no-store",
-      });
-      const data =
-        ((await res.json().catch(() => ({ detail: res.statusText }))) as VerifyJobState & {
-          detail?: string;
-        }) ?? null;
-
-      if (!res.ok || !data) {
-        throw new Error(data?.detail ?? tCommon("unknown_error"));
-      }
-
-      setJobState(data);
-
-      if (data.status === "succeeded" || data.status === "failed") {
-        return data;
-      }
-
-      await sleep(VERIFY_JOB_POLL_INTERVAL_MS);
-    }
-
-    throw new Error(t("job_timeout"));
-  }
-
-  async function handleSubmit() {
-    if (!fileA || !fileB) return;
-
-    const totalBytes = fileA.size + fileB.size;
-    if (totalBytes > VERIFY_TOTAL_UPLOAD_LIMIT_BYTES) {
-      setError(t("max_total_size_exceeded", { maxMB: VERIFY_TOTAL_UPLOAD_LIMIT_MB }));
-      setResult(null);
-      return;
-    }
-
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    setUploadProgress(0);
-    setJobState(null);
-
-    const form = new FormData();
-    form.append("audio_a", fileA);
-    form.append("audio_b", fileB);
-    form.append("separate_vocals", String(separateVocals));
-    form.append("denoise", "true");
-    form.append("enable_fast_return", "true");
-    if (model) form.append("model", model);
-
-    try {
-      const created = await createVerifyJob(form);
-      setJobState(created);
-
-      const finished = await pollVerifyJob(created.job_id);
-      if (finished.status === "failed") {
-        throw new Error(finished.error ?? t("job_failed"));
-      }
-      if (!finished.result) {
-        throw new Error(t("job_missing_result"));
-      }
-
-      setResult(finished.result);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : tCommon("unknown_error"));
-    } finally {
-      setLoading(false);
-    }
-  }
-
   return (
     <div className="space-y-8">
       <div className="animate-[fade-up_0.3s_ease-out_both]">
@@ -239,22 +86,26 @@ export default function VerifyPage() {
         <AudioUploader
           id="audio-a"
           label={t("audio_a")}
+          files={fileA ? [fileA] : []}
           uploading={loading}
           onFile={setFileA}
-          onClear={() => { setFileA(null); setResult(null); setError(null); }}
+          onClear={clearFileA}
         />
         <AudioUploader
           id="audio-b"
           label={t("audio_b")}
+          files={fileB ? [fileB] : []}
           uploading={loading}
           onFile={setFileB}
-          onClear={() => { setFileB(null); setResult(null); setError(null); }}
+          onClear={clearFileB}
         />
       </div>
 
       <div className="animate-[fade-up_0.3s_ease-out_both]" style={{ animationDelay: "120ms" }}>
         <Button
-          onClick={handleSubmit}
+          onClick={() => {
+            void start();
+          }}
           disabled={!fileA || !fileB || loading}
           size="lg"
           className="w-full sm:w-auto"

@@ -56,11 +56,6 @@ RUN python -c "\
 import torch; \
 torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True)"
 
-# Pre-download Resemblyzer encoder weights
-RUN python -c "\
-from resemblyzer import VoiceEncoder; \
-VoiceEncoder(device='cpu')"
-
 # Pre-download Demucs htdemucs model weights
 RUN python -c "\
 from demucs.pretrained import get_model; \
@@ -73,4 +68,4 @@ COPY . .
 
 EXPOSE 8000
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

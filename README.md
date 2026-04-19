@@ -133,11 +133,14 @@ Common variables:
 - MINIO_ACCESS_KEY: MinIO root username
 - MINIO_SECRET_KEY: MinIO root password
 - MINIO_BUCKET: object storage bucket name
+- ENABLED_MODELS: comma-separated embedding model IDs, default ecapa-tdnn-v1
 - NEXT_PUBLIC_SITE_URL: public frontend base URL used for canonical tags, sitemap, manifest, and social metadata
 - OTEL_EXPORTER_OTLP_ENDPOINT: OTEL / SigNoz collector endpoint
 - SEARCH_STRATEGY: best, centroid, or hybrid
 - SEPARATOR_PROFILE: demucs, mdx, or roformer
 - HF_TOKEN: optional Hugging Face token for gated models
+
+By default the stack now runs only ECAPA-TDNN for enrollment, search, and verification. If you want to re-enable multi-model embeddings later, set ENABLED_MODELS to a comma-separated list such as ecapa-tdnn-v1,resemblyzer-v1.
 
 ## Deployment
 

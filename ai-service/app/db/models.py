@@ -32,6 +32,10 @@ class AudioAsset(Base):
     storage_key: Mapped[str] = mapped_column(String(512))
     duration_seconds: Mapped[float | None] = mapped_column(Float, default=None)
     sample_rate: Mapped[int | None] = mapped_column(Integer, default=None)
+    processing_status: Mapped[str] = mapped_column(String(32), default="pending")
+    processing_error: Mapped[str | None] = mapped_column(Text, default=None)
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    processing_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     has_speech: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 

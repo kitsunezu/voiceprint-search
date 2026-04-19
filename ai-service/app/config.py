@@ -52,6 +52,7 @@ RESEMBLYZER_MODEL = ModelConfig(
     calibration_weight=8.0,
     calibration_bias=-2.8,
     verify_threshold=0.70,
+    enabled=False,
 )
 
 PYANNOTE_MODEL = ModelConfig(
@@ -121,7 +122,7 @@ class Settings(BaseSettings):
     # Default model used when caller does not specify one
     default_model: str = "ecapa-tdnn-v1"
 
-    # Comma-separated list of model IDs to enable (empty = all built-in)
+    # Comma-separated list of model IDs to enable (empty = all built-in models flagged enabled)
     enabled_models: str = ""
 
     # ── Audio preprocessing pipeline ──────────────────────────────────────
@@ -143,7 +144,7 @@ class Settings(BaseSettings):
     separator_cache_dir: str = "/tmp/voiceprint-separator-cache"
     separator_cache_enabled: bool = True
     separator_max_seconds: int = 240
-    separator_timeout_seconds: int = 600
+    separator_timeout_seconds: int = 180
 
     # ── Search aggregation ────────────────────────────────────────────────
     search_strategy: str = "hybrid"          # best | centroid | hybrid
@@ -162,6 +163,10 @@ class Settings(BaseSettings):
     # Leave empty to run without any telemetry (local dev default).
     otel_exporter_otlp_endpoint: str = ""
     otel_service_name: str = "voiceprint-ai-service"
+
+    # ── Housekeeping ──────────────────────────────────────────────────────
+    housekeep_enabled: bool = True
+    housekeep_interval_seconds: int = 3600
 
     class Config:
         env_file = ".env"

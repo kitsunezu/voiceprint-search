@@ -29,6 +29,7 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=voiceprint-audio
       - MODEL_CACHE_DIR=/models
+      - ENABLED_MODELS=${ENABLED_MODELS:-ecapa-tdnn-v1}
       - PREPROCESS_NORMALIZE_MAX_SECONDS=${PREPROCESS_NORMALIZE_MAX_SECONDS:-240}
       - PREPROCESS_MAX_SPEECH_SECONDS=${PREPROCESS_MAX_SPEECH_SECONDS:-180}
       - SEPARATOR_PROFILE=${SEPARATOR_PROFILE:-demucs}
@@ -36,9 +37,12 @@ services:
       - SEPARATOR_MODEL_DIR=/models/separators
       - SEPARATOR_CACHE_DIR=/tmp/voiceprint-separator-cache
       - SEPARATOR_MAX_SECONDS=${SEPARATOR_MAX_SECONDS:-240}
+      - SEPARATOR_TIMEOUT_SECONDS=${SEPARATOR_TIMEOUT_SECONDS:-180}
       - SEARCH_STRATEGY=${SEARCH_STRATEGY:-hybrid}
       - SEARCH_HYBRID_BEST_WEIGHT=${SEARCH_HYBRID_BEST_WEIGHT:-0.7}
       - SEARCH_HYBRID_CENTROID_WEIGHT=${SEARCH_HYBRID_CENTROID_WEIGHT:-0.3}
+      - HOUSEKEEP_ENABLED=${HOUSEKEEP_ENABLED:-true}
+      - HOUSEKEEP_INTERVAL_SECONDS=${HOUSEKEEP_INTERVAL_SECONDS:-3600}
       - OTEL_EXPORTER_OTLP_ENDPOINT=http://192.168.1.100:4318
       - OTEL_SERVICE_NAME=voiceprint-ai-service
     volumes:
@@ -63,7 +67,7 @@ services:
     build: ./ai-service
     container_name: voiceprint-worker
     restart: unless-stopped
-    command: ["python", "-m", "dramatiq", "app.worker.tasks"]
+    command: ["python", "-m", "dramatiq", "--processes", "2", "--threads", "1", "app.worker.tasks"]
     environment:
       - DATABASE_URL=postgresql+asyncpg://voiceprint:voiceprint@db:5432/voiceprint
       - REDIS_URL=redis://redis:6379/0
@@ -72,6 +76,7 @@ services:
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
       - MINIO_BUCKET=voiceprint-audio
       - MODEL_CACHE_DIR=/models
+      - ENABLED_MODELS=${ENABLED_MODELS:-ecapa-tdnn-v1}
       - PREPROCESS_NORMALIZE_MAX_SECONDS=${PREPROCESS_NORMALIZE_MAX_SECONDS:-240}
       - PREPROCESS_MAX_SPEECH_SECONDS=${PREPROCESS_MAX_SPEECH_SECONDS:-180}
       - SEPARATOR_PROFILE=${SEPARATOR_PROFILE:-demucs}
@@ -79,6 +84,7 @@ services:
       - SEPARATOR_MODEL_DIR=/models/separators
       - SEPARATOR_CACHE_DIR=/tmp/voiceprint-separator-cache
       - SEPARATOR_MAX_SECONDS=${SEPARATOR_MAX_SECONDS:-240}
+      - SEPARATOR_TIMEOUT_SECONDS=${SEPARATOR_TIMEOUT_SECONDS:-180}
       - SEARCH_STRATEGY=${SEARCH_STRATEGY:-hybrid}
       - SEARCH_HYBRID_BEST_WEIGHT=${SEARCH_HYBRID_BEST_WEIGHT:-0.7}
       - SEARCH_HYBRID_CENTROID_WEIGHT=${SEARCH_HYBRID_CENTROID_WEIGHT:-0.3}

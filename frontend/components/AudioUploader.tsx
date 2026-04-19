@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { useTranslations } from "next-intl";
 import { Upload, CheckCircle2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -9,7 +9,9 @@ type SingleProps = {
   id: string;
   label: string;
   accept?: string;
+  files?: File[];
   multiple?: false;
+  resetSignal?: number;
   uploading?: boolean;
   onFile: (file: File) => void;
   onClear?: () => void;
@@ -19,7 +21,9 @@ type MultipleProps = {
   id: string;
   label: string;
   accept?: string;
+  files?: File[];
   multiple: true;
+  resetSignal?: number;
   uploading?: boolean;
   onFiles: (files: File[]) => void;
   onClear?: () => void;
@@ -40,6 +44,19 @@ export function AudioUploader(props: Props) {
   const [fileNames, setFileNames] = useState<string[]>([]);
   const [fileSizes, setFileSizes] = useState<number[]>([]);
   const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    setFileNames([]);
+    setFileSizes([]);
+    if (inputRef.current) inputRef.current.value = "";
+  }, [props.resetSignal]);
+
+  useEffect(() => {
+    if (props.files === undefined) return;
+    setFileNames(props.files.map((file) => file.name));
+    setFileSizes(props.files.map((file) => file.size));
+    if (props.files.length === 0 && inputRef.current) inputRef.current.value = "";
+  }, [props.files]);
 
   function handleFiles(list: FileList | null) {
     if (!list || list.length === 0) return;
@@ -164,7 +181,7 @@ export function AudioUploader(props: Props) {
               className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-1 rounded focus-visible:outline-none focus-visible:underline"
             >
               <X className="size-3" />
-              {t("clear")}
+              {t(props.multiple ? "clear_all" : "clear")}
             </button>
           </div>
         ) : (

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslations } from "next-intl";
 import {
   CheckCircle2,
@@ -13,34 +13,47 @@ import {
   Search as SearchIcon,
 } from "lucide-react";
 import { AudioUploader } from "@/components/AudioUploader";
+import { useBackgroundTasks } from "@/components/background-tasks";
 import { Button } from "@/components/ui/button";
 import { Dialog } from "@/components/ui/dialog";
+import { Progress } from "@/components/ui/progress";
 import { cn } from "@/lib/utils";
-
-type Speaker = { id: number; name: string; embedding_count: number; created_at: string };
-type FileStatus = "pending" | "uploading" | "done" | "error";
-type QueuedFile = { key: string; file: File; status: FileStatus; message?: string };
 
 export default function EnrollPage() {
   const t = useTranslations("enroll");
-  const tCommon = useTranslations("common");
+  const tVerify = useTranslations("verify");
+  const tUploader = useTranslations("uploader");
+  const { enroll } = useBackgroundTasks();
+  const {
+    name,
+    queue,
+    isRunning,
+    speakers,
+    selectedSpeakerId,
+    dupDialogSpeaker,
+    dropdownOpen,
+    searchQuery,
+    filteredSpeakers,
+    pendingCount,
+    canEnroll,
+    allDone,
+    hasSpeaker,
+    setDropdownOpen,
+    setSearchQuery,
+    clearUploadedFiles,
+    selectExistingSpeaker,
+    selectNewSpeaker,
+    clearSpeaker,
+    handleFilesSelected,
+    removeFile,
+    handleEnroll,
+    confirmDuplicateExisting,
+    confirmDuplicateNew,
+    closeDuplicateDialog,
+    resetDone,
+  } = enroll;
 
-  const [name, setName] = useState("");
-  const [queue, setQueue] = useState<QueuedFile[]>([]);
-  const [isRunning, setIsRunning] = useState(false);
-  const [speakers, setSpeakers] = useState<Speaker[]>([]);
-  const [selectedSpeakerId, setSelectedSpeakerId] = useState<number | null>(null);
-  const [dupDialogSpeaker, setDupDialogSpeaker] = useState<Speaker | null>(null);
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
   const comboRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    fetch("/api/speakers")
-      .then((r) => r.json())
-      .then((d) => setSpeakers(d.speakers ?? []))
-      .catch(() => {});
-  }, []);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -51,122 +64,7 @@ export default function EnrollPage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
-
-  const filteredSpeakers = searchQuery.trim()
-    ? speakers.filter((s) => s.name.toLowerCase().includes(searchQuery.toLowerCase()))
-    : speakers;
-
-  const exactMatch = name.trim()
-    ? speakers.find((s) => s.name.toLowerCase() === name.trim().toLowerCase())
-    : undefined;
-
-  function selectExistingSpeaker(s: Speaker) {
-    setName(s.name);
-    setSelectedSpeakerId(s.id);
-    setDropdownOpen(false);
-    setSearchQuery("");
-  }
-
-  function selectNewSpeaker(n: string) {
-    setName(n.trim());
-    setSelectedSpeakerId(null);
-    setDropdownOpen(false);
-    setSearchQuery("");
-  }
-
-  function clearSpeaker() {
-    setName("");
-    setSelectedSpeakerId(null);
-    setSearchQuery("");
-    setTimeout(() => setDropdownOpen(true), 50);
-  }
-
-  function handleFilesSelected(files: File[]) {
-    setQueue((prev) => {
-      const existingKeys = new Set(prev.map((q) => q.key));
-      const newItems: QueuedFile[] = files
-        .filter((f) => !existingKeys.has(f.name + f.size))
-        .map((f) => ({ key: f.name + f.size, file: f, status: "pending" }));
-      return [...prev, ...newItems];
-    });
-  }
-
-  function removeFile(key: string) {
-    setQueue((prev) => prev.filter((q) => q.key !== key));
-  }
-
-  const pendingCount = queue.filter((q) => q.status === "pending").length;
-  const canEnroll = !!name.trim() && pendingCount > 0 && !isRunning;
-  const allDone = queue.length > 0 && queue.every((q) => q.status === "done");
-
-  async function startRun(overrideId?: number | null) {
-    setIsRunning(true);
-    let resolvedId: number | null = overrideId !== undefined ? overrideId : selectedSpeakerId;
-
-    for (const item of queue) {
-      if (item.status !== "pending") continue;
-      setQueue((prev) =>
-        prev.map((q) => (q.key === item.key ? { ...q, status: "uploading" } : q))
-      );
-
-      const form = new FormData();
-      form.append("audio", item.file);
-      form.append("speaker_name", name.trim());
-      if (resolvedId !== null) form.append("speaker_id", String(resolvedId));
-
-      try {
-        const res = await fetch("/api/enroll", { method: "POST", body: form });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ detail: res.statusText }));
-          throw new Error(err.detail ?? "Enrollment failed");
-        }
-        const data = await res.json();
-        if (resolvedId === null) resolvedId = data.speaker_id;
-        setQueue((prev) =>
-          prev.map((q) =>
-            q.key === item.key
-              ? { ...q, status: "done", message: `#${data.embedding_id}` }
-              : q
-          )
-        );
-      } catch (e: unknown) {
-        setQueue((prev) =>
-          prev.map((q) =>
-            q.key === item.key
-              ? {
-                  ...q,
-                  status: "error",
-                  message: e instanceof Error ? e.message : tCommon("unknown_error"),
-                }
-              : q
-          )
-        );
-      }
-    }
-
-    fetch("/api/speakers")
-      .then((r) => r.json())
-      .then((d) => setSpeakers(d.speakers ?? []))
-      .catch(() => {});
-    setIsRunning(false);
-  }
-
-  async function handleEnroll() {
-    if (!canEnroll) return;
-    if (!selectedSpeakerId && exactMatch) {
-      setDupDialogSpeaker(exactMatch);
-      return;
-    }
-    await startRun();
-  }
-
-  function resetDone() {
-    setQueue([]);
-    setName("");
-    setSelectedSpeakerId(null);
-  }
-
-  const hasSpeaker = !!(name && !dropdownOpen);
+  const selectedSpeaker = speakers.find((speaker) => speaker.id === selectedSpeakerId) ?? null;
 
   return (
     <div className="max-w-2xl mx-auto space-y-5">
@@ -206,7 +104,7 @@ export default function EnrollPage() {
                 {selectedSpeakerId !== null && (
                   <p className="text-xs text-muted-foreground">
                     ID {selectedSpeakerId} ·{" "}
-                    {speakers.find((s) => s.id === selectedSpeakerId)?.embedding_count ?? "?"}{" "}
+                    {selectedSpeaker?.embedding_count ?? "?"}{" "}
                     {t("samples")}
                   </p>
                 )}
@@ -290,18 +188,28 @@ export default function EnrollPage() {
 
       {/* ── Step 2: Upload files ───────────────────── */}
       <div className="rounded-2xl border border-border bg-card p-5 shadow-sm space-y-3 animate-[fade-up_0.3s_ease-out_both]" style={{ animationDelay: "80ms" }}>
-        <div className="flex items-center gap-2.5">
-          <span className="inline-flex items-center justify-center size-6 rounded-full bg-primary text-primary-foreground text-xs font-bold shrink-0">
-            2
-          </span>
-          <span className="text-sm font-semibold">{t("step_files")}</span>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            <span className="inline-flex items-center justify-center size-6 rounded-full bg-primary text-primary-foreground text-xs font-bold shrink-0">
+              2
+            </span>
+            <span className="text-sm font-semibold">{t("step_files")}</span>
+          </div>
+          {queue.length > 0 && !isRunning && (
+            <Button type="button" variant="outline" size="sm" onClick={clearUploadedFiles}>
+              {tUploader("clear_all")}
+            </Button>
+          )}
         </div>
 
         <AudioUploader
           id="enroll-audio"
           label={t("audio_label")}
+          files={queue.map((item) => item.file)}
           multiple
+          uploading={isRunning}
           onFiles={handleFilesSelected}
+          onClear={clearUploadedFiles}
         />
 
         {/* File queue */}
@@ -315,6 +223,7 @@ export default function EnrollPage() {
                   item.status === "done" && "border-success/30 bg-success/10",
                   item.status === "error" && "border-destructive/30 bg-destructive/10",
                   item.status === "uploading" && "border-primary/30 bg-primary/10",
+                  item.status === "queueing" && "border-primary/30 bg-primary/10",
                   item.status === "pending" && "border-border bg-background/60"
                 )}
               >
@@ -325,22 +234,40 @@ export default function EnrollPage() {
                   {item.status === "uploading" && (
                     <Loader2 className="size-4 animate-spin text-primary" />
                   )}
+                  {item.status === "queueing" && (
+                    <Loader2 className="size-4 animate-spin text-primary" />
+                  )}
                   {item.status === "done" && <CheckCircle2 className="size-4 text-success" />}
                   {item.status === "error" && <XCircle className="size-4 text-destructive" />}
                 </span>
-                <span
-                  className={cn(
-                    "flex-1 truncate",
-                    item.status === "done" && "text-success",
-                    item.status === "error" && "text-destructive"
+                <div className="flex-1 min-w-0">
+                  <p
+                    className={cn(
+                      "truncate",
+                      item.status === "done" && "text-success",
+                      item.status === "error" && "text-destructive"
+                    )}
+                  >
+                    {item.file.name}
+                  </p>
+                  {(item.status === "uploading" || item.status === "queueing") && (
+                    <div className="mt-1.5 space-y-1.5">
+                      <div className="flex items-center justify-between text-[11px] text-muted-foreground">
+                        <span>{tVerify("upload_progress")}</span>
+                        <span>
+                          {item.status === "queueing"
+                            ? tVerify("queueing")
+                            : `${Math.round(item.uploadProgress ?? 0)}%`}
+                        </span>
+                      </div>
+                      <Progress value={item.uploadProgress ?? 0} className="h-1.5" />
+                    </div>
                   )}
-                >
-                  {item.file.name}
-                </span>
-                {item.message && (
-                  <span className="text-xs text-muted-foreground shrink-0">{item.message}</span>
-                )}
-                {!isRunning && item.status !== "uploading" && (
+                  {item.status === "error" && item.message && (
+                    <p className="mt-1 text-xs text-muted-foreground">{item.message}</p>
+                  )}
+                </div>
+                {!isRunning && ["pending", "done", "error"].includes(item.status) && (
                   <button
                     onClick={() => removeFile(item.key)}
                     className="shrink-0 p-1.5 -m-1.5 rounded-lg text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
@@ -358,7 +285,9 @@ export default function EnrollPage() {
       {/* ── Actions ───────────────────────────────── */}
       <div className="flex flex-wrap items-center gap-3 animate-[fade-up_0.3s_ease-out_both]" style={{ animationDelay: "120ms" }}>
         <Button
-          onClick={handleEnroll}
+          onClick={() => {
+            void handleEnroll();
+          }}
           disabled={!canEnroll}
           size="lg"
           className="flex-1 sm:flex-none"
@@ -377,16 +306,12 @@ export default function EnrollPage() {
             {t("enroll_another")}
           </Button>
         )}
-        <span className="flex items-center gap-1.5 text-sm text-muted-foreground select-none ml-auto" title={tCommon("auto_preprocess_hint")}>
-          <span className="inline-block size-2 rounded-full bg-primary" />
-          {tCommon("auto_preprocess_label")}
-        </span>
       </div>
 
       {/* ── Duplicate speaker popup ────────────────── */}
       <Dialog
         open={!!dupDialogSpeaker}
-        onClose={() => setDupDialogSpeaker(null)}
+        onClose={closeDuplicateDialog}
         title={t("dup_dialog_title")}
         description={t("dup_dialog_desc")}
       >
@@ -402,10 +327,7 @@ export default function EnrollPage() {
               <Button
                 className="w-full"
                 onClick={() => {
-                  const s = dupDialogSpeaker;
-                  setDupDialogSpeaker(null);
-                  setSelectedSpeakerId(s.id);
-                  startRun(s.id);
+                  void confirmDuplicateExisting();
                 }}
               >
                 {t("add_to_existing")}
@@ -414,9 +336,7 @@ export default function EnrollPage() {
                 variant="outline"
                 className="w-full"
                 onClick={() => {
-                  setDupDialogSpeaker(null);
-                  setSelectedSpeakerId(null);
-                  startRun(null);
+                  void confirmDuplicateNew();
                 }}
               >
                 {t("create_new_anyway")}

@@ -1,5 +1,6 @@
 """1:N speaker search endpoint — find most similar voices in the database."""
 
+import asyncio
 import os
 import shutil
 import tempfile
@@ -55,10 +56,11 @@ async def search(
         with open(raw_path, "wb") as f:
             f.write(await audio.read())
 
-        # ── Mandatory preprocessing pipeline ──
+        # ── Mandatory preprocessing pipeline (offloaded to thread pool) ──
         try:
             preprocess_started = time.perf_counter()
-            result, pp_dirs = preprocessor.process(
+            result, pp_dirs = await asyncio.to_thread(
+                preprocessor.process,
                 raw_path,
                 separate_vocals=separate_vocals,
                 denoise=denoise,
@@ -70,7 +72,7 @@ async def search(
         preprocess_wall = round(time.perf_counter() - preprocess_started, 4)
 
         embed_started = time.perf_counter()
-        query_vec = embed_segments(embedder, result.segments)
+        query_vec = await asyncio.to_thread(embed_segments, embedder, result.segments)
         embed_time = round(time.perf_counter() - embed_started, 4)
 
         search_started = time.perf_counter()

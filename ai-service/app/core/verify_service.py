@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 import time
 from collections.abc import Awaitable, Callable
@@ -104,7 +105,8 @@ async def run_verify_pipeline(
             quick_started = time.perf_counter()
             try:
                 report("preprocess_a", 12)
-                res_a_quick, dirs_a_quick = preprocessor.process(
+                res_a_quick, dirs_a_quick = await asyncio.to_thread(
+                    preprocessor.process,
                     path_a,
                     separate_vocals=False,
                     denoise=denoise,
@@ -115,11 +117,12 @@ async def run_verify_pipeline(
 
                 report("embed_a", 24)
                 embed_started = time.perf_counter()
-                emb_a_quick = embed_segments(embedder, res_a_quick.segments)
+                emb_a_quick = await asyncio.to_thread(embed_segments, embedder, res_a_quick.segments)
                 quick_timings["embed_a"] = round(time.perf_counter() - embed_started, 4)
 
                 report("preprocess_b", 36)
-                res_b_quick, dirs_b_quick = preprocessor.process(
+                res_b_quick, dirs_b_quick = await asyncio.to_thread(
+                    preprocessor.process,
                     path_b,
                     separate_vocals=False,
                     denoise=denoise,
@@ -130,7 +133,7 @@ async def run_verify_pipeline(
 
                 report("embed_b", 48)
                 embed_started = time.perf_counter()
-                emb_b_quick = embed_segments(embedder, res_b_quick.segments)
+                emb_b_quick = await asyncio.to_thread(embed_segments, embedder, res_b_quick.segments)
                 quick_timings["embed_b"] = round(time.perf_counter() - embed_started, 4)
 
                 report("score", 90)
@@ -163,7 +166,8 @@ async def run_verify_pipeline(
         report("preprocess_a", 18)
         preprocess_started = time.perf_counter()
         try:
-            res_a, dirs_a = preprocessor.process(
+            res_a, dirs_a = await asyncio.to_thread(
+                preprocessor.process,
                 path_a,
                 separate_vocals=separate_vocals,
                 denoise=denoise,
@@ -176,7 +180,7 @@ async def run_verify_pipeline(
 
         report("embed_a", 32)
         embed_started = time.perf_counter()
-        emb_a = embed_segments(embedder, res_a.segments)
+        emb_a = await asyncio.to_thread(embed_segments, embedder, res_a.segments)
         embed_a_time = round(time.perf_counter() - embed_started, 4)
 
         timings: dict[str, dict | float] = {
@@ -190,7 +194,8 @@ async def run_verify_pipeline(
             report("preprocess_b", 52)
             preprocess_started = time.perf_counter()
             try:
-                res_b, dirs_b = preprocessor.process(
+                res_b, dirs_b = await asyncio.to_thread(
+                    preprocessor.process,
                     path_b,
                     separate_vocals=separate_vocals,
                     denoise=denoise,
@@ -204,7 +209,7 @@ async def run_verify_pipeline(
 
             report("embed_b", 72)
             embed_started = time.perf_counter()
-            emb_b = embed_segments(embedder, res_b.segments)
+            emb_b = await asyncio.to_thread(embed_segments, embedder, res_b.segments)
             timings["embed_b"] = round(time.perf_counter() - embed_started, 4)
         else:
             if speaker_id is None:

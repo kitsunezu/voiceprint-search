@@ -2,6 +2,7 @@
 
 import { ThemeProvider as NextThemesProvider } from "next-themes";
 import { NextIntlClientProvider } from "next-intl";
+import { BackgroundTasksProvider } from "@/components/background-tasks";
 
 export function Providers({
   children,
@@ -20,7 +21,7 @@ export function Providers({
       disableTransitionOnChange
     >
       <NextIntlClientProvider locale={locale} messages={messages} timeZone="UTC">
-        {children}
+        <BackgroundTasksProvider>{children}</BackgroundTasksProvider>
       </NextIntlClientProvider>
     </NextThemesProvider>
   );

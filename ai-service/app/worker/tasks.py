@@ -7,27 +7,31 @@ import logging
 import os
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from dataclasses import dataclass
 
 import dramatiq
 from dramatiq.brokers.redis import RedisBroker
+from sqlalchemy import select
 
 from app.config import settings
 from app.core.calibration import CalibratorRegistry
 from app.core.denoise import Denoiser
-from app.core.embedder import EmbedderRegistry
-from app.core.preprocessing import AudioPreprocessor
+from app.core.embedder import EmbedderRegistry, embed_segments
+from app.core.preprocessing import AudioPreprocessor, PreprocessError
 from app.core.separator import VocalSeparator
 from app.core.telemetry import setup_telemetry
 from app.core.vad import VoiceActivityDetector
 from app.core.verify_jobs import (
     complete_verify_job,
     fail_verify_job,
-    get_redis_client,
+    get_redis_client as get_verify_redis_client,
     mark_verify_job_running,
     update_verify_job_progress,
 )
 from app.core.verify_service import load_speaker_reference_embedding, run_verify_pipeline
+from app.db import repository as repo
+from app.db.models import AudioAsset, Embedding
 from app.db.session import async_session_factory
 from app.storage.minio_client import delete_objects_by_prefix, download_file, init_minio
 
@@ -92,7 +96,7 @@ def process_verify_job(payload: dict):
         logger.error("Missing job_id in verify payload")
         return
 
-    redis_client = get_redis_client()
+    redis_client = get_verify_redis_client()
     mark_verify_job_running(redis_client, job_id, stage="download", progress=5)
 
     storage_prefix = str(payload.get("storage_prefix", "")).strip()
@@ -183,6 +187,171 @@ def process_verify_job(payload: dict):
                 delete_objects_by_prefix(minio_client, f"{storage_prefix}/")
             except Exception:
                 logger.exception("Failed to clean up objects for verify job %s", job_id)
+
+
+@dramatiq.actor(max_retries=3, min_backoff=10_000)
+def process_audio_asset_embeddings(asset_id: int):
+    """Compute missing embeddings for a stored raw audio asset in the background."""
+    if asset_id <= 0:
+        logger.error("Invalid audio asset id: %s", asset_id)
+        return
+
+    runtime = _get_verify_runtime()
+    asset_snapshot = asyncio.run(_load_audio_asset_snapshot(asset_id, runtime.registry.available_ids))
+    if asset_snapshot is None:
+        return
+
+    asyncio.run(_set_audio_asset_processing_state(asset_id, status="running", error=None, started=True))
+
+    tmp_dir = tempfile.mkdtemp(prefix=f"asset-embed-{asset_id}-")
+    cleanup_dirs: list[str] = []
+    try:
+        minio_client = init_minio()
+        raw_path = os.path.join(tmp_dir, "audio.orig")
+        download_file(minio_client, asset_snapshot["storage_key"], raw_path)
+
+        try:
+            result, pp_dirs = runtime.preprocessor.process(raw_path)
+        except PreprocessError as exc:
+            logger.warning("asset=%d — no usable speech, skipping background embedding", asset_id)
+            asyncio.run(
+                _set_audio_asset_processing_state(
+                    asset_id,
+                    status="no_speech",
+                    error=str(exc),
+                    has_speech=False,
+                    finished=True,
+                )
+            )
+            return
+
+        cleanup_dirs.extend(pp_dirs)
+
+        asyncio.run(
+            _persist_audio_asset_embeddings(
+                asset_id=asset_id,
+                speaker_id=int(asset_snapshot["speaker_id"]),
+                available_models=runtime.registry.available_ids,
+                registry=runtime.registry,
+                segments=result.segments,
+            )
+        )
+    except Exception as exc:
+        logger.exception("Failed to process background embeddings for audio asset %d", asset_id)
+        asyncio.run(
+            _set_audio_asset_processing_state(
+                asset_id,
+                status="failed",
+                error=_format_job_error(exc),
+                finished=True,
+            )
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        for d in cleanup_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+async def _load_audio_asset_snapshot(asset_id: int, available_models: list[str]) -> dict | None:
+    async with async_session_factory() as db:
+        asset = await db.get(AudioAsset, asset_id)
+        if asset is None:
+            logger.warning("Audio asset %d not found for background embedding", asset_id)
+            return None
+        if asset.speaker_id is None:
+            logger.warning("Audio asset %d has no speaker_id; skipping background embedding", asset_id)
+            return None
+
+        existing_stmt = select(Embedding.model_version).where(Embedding.audio_asset_id == asset.id)
+        existing = set((await db.execute(existing_stmt)).scalars().all())
+        missing = [model_id for model_id in available_models if model_id not in existing]
+        if not missing:
+            return None
+
+        return {
+            "speaker_id": int(asset.speaker_id),
+            "storage_key": asset.storage_key,
+        }
+
+
+async def _set_audio_asset_processing_state(
+    asset_id: int,
+    *,
+    status: str,
+    error: str | None,
+    has_speech: bool | None = None,
+    started: bool = False,
+    finished: bool = False,
+) -> None:
+    async with async_session_factory() as db:
+        asset = await db.get(AudioAsset, asset_id)
+        if asset is None:
+            return
+        asset.processing_status = status
+        asset.processing_error = error
+        if has_speech is not None:
+            asset.has_speech = has_speech
+        if started:
+            asset.processing_started_at = datetime.now(timezone.utc)
+            asset.processing_finished_at = None
+        if finished:
+            if asset.processing_started_at is None:
+                asset.processing_started_at = datetime.now(timezone.utc)
+            asset.processing_finished_at = datetime.now(timezone.utc)
+        await db.commit()
+
+
+async def _persist_audio_asset_embeddings(
+    *,
+    asset_id: int,
+    speaker_id: int,
+    available_models: list[str],
+    registry: EmbedderRegistry,
+    segments,
+) -> None:
+    async with async_session_factory() as db:
+        asset = await db.get(AudioAsset, asset_id)
+        if asset is None or asset.speaker_id is None:
+            return
+
+        existing_stmt = select(Embedding.model_version).where(Embedding.audio_asset_id == asset.id)
+        existing = set((await db.execute(existing_stmt)).scalars().all())
+        missing = [model_id for model_id in available_models if model_id not in existing]
+        if not missing:
+            asset.processing_status = "succeeded"
+            asset.processing_error = None
+            asset.processing_finished_at = datetime.now(timezone.utc)
+            await db.commit()
+            return
+
+        failures: list[str] = []
+        for model_id in missing:
+            try:
+                vector = embed_segments(registry.get(model_id), segments)
+                await repo.create_embedding(
+                    db,
+                    speaker_id=speaker_id,
+                    audio_asset_id=asset.id,
+                    vector=vector,
+                    model_version=model_id,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to create background embedding for audio asset %d (%s)",
+                    asset_id,
+                    model_id,
+                )
+                failures.append(f"{model_id}: embedding failed")
+
+        asset.has_speech = True
+        asset.processing_finished_at = datetime.now(timezone.utc)
+        if failures:
+            asset.processing_status = "failed"
+            asset.processing_error = failures[0]
+        else:
+            asset.processing_status = "succeeded"
+            asset.processing_error = None
+        await db.commit()
 
 
 @dramatiq.actor(max_retries=3, min_backoff=10_000)

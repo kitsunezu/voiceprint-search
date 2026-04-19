@@ -1,4 +1,5 @@
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 import logging
 
 from fastapi import FastAPI, Request
@@ -8,6 +9,7 @@ from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from app.config import settings
 from app.core.telemetry import setup_telemetry
 from app.core.embedder import EmbedderRegistry
+from app.core.housekeep import run_housekeep
 from app.core.vad import VoiceActivityDetector
 from app.core.separator import VocalSeparator
 from app.core.denoise import Denoiser
@@ -18,6 +20,29 @@ from app.storage.minio_client import init_minio
 from app.api.router import api_router
 
 logger = logging.getLogger(__name__)
+
+
+async def _run_housekeep_loop(app: FastAPI) -> None:
+    interval_seconds = max(300, settings.housekeep_interval_seconds)
+    logger.info("Scheduled housekeep enabled interval=%ss", interval_seconds)
+
+    await asyncio.sleep(interval_seconds)
+    while True:
+        try:
+            async with async_session_factory() as db:
+                result = await run_housekeep(db, app.state.minio)
+            logger.info(
+                "Scheduled housekeep completed deleted_db_assets=%s deleted_minio_objects=%s deleted_embeddings=%s",
+                result["deleted_db_assets"],
+                result["deleted_minio_objects"],
+                result["deleted_embeddings"],
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Scheduled housekeep run failed")
+
+        await asyncio.sleep(interval_seconds)
 
 # Initialise OTEL before app creation so providers are set for all modules.
 # When OTEL_EXPORTER_OTLP_ENDPOINT is not configured this is a no-op.
@@ -73,10 +98,20 @@ async def lifespan(app: FastAPI):
 
     app.state.db = async_session_factory
     app.state.minio = init_minio()
+    app.state.housekeep_task = None
+
+    if settings.housekeep_enabled:
+        app.state.housekeep_task = asyncio.create_task(_run_housekeep_loop(app))
 
     yield
 
     # ── Shutdown ──
+    housekeep_task = getattr(app.state, "housekeep_task", None)
+    if housekeep_task is not None:
+        housekeep_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await housekeep_task
+
     await engine.dispose()
 
 

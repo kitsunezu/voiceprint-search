@@ -1,82 +1,36 @@
 "use client";
 
-import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { Loader2, Music2 } from "lucide-react";
 import { AudioUploader } from "@/components/AudioUploader";
+import { useBackgroundTasks } from "@/components/background-tasks";
 import { ModelSelector } from "@/components/ModelSelector";
 import { PreprocessControls } from "@/components/PreprocessControls";
 import { ProcessingInsights } from "@/components/ProcessingInsights";
 import { ResultCard } from "@/components/ResultCard";
 import { Button } from "@/components/ui/button";
 
-interface SearchMatch {
-  speaker_id: number;
-  speaker_name: string;
-  score: number;
-  probability: number;
-  rank: number;
-}
-
-interface SearchResponse {
-  results: SearchMatch[];
-  elapsed_seconds?: number;
-  model_used?: string;
-}
-
 export default function SearchPage() {
   const t = useTranslations("search");
-  const tCommon = useTranslations("common");
   const tPreprocess = useTranslations("preprocess");
-  const [file, setFile] = useState<File | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [results, setResults] = useState<SearchMatch[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [model, setModel] = useState("");
-  const [limit, setLimit] = useState(10);
-  const [modelUsed, setModelUsed] = useState("");
-  const [separateVocals, setSeparateVocals] = useState(true);
-  const [elapsedSeconds, setElapsedSeconds] = useState<number | null>(null);
-
-  async function handleSearch() {
-    if (!file) return;
-    setLoading(true);
-    setError(null);
-    setResults([]);
-    setModelUsed("");
-    setElapsedSeconds(null);
-
-    const form = new FormData();
-    form.append("audio", file);
-    form.append("limit", String(limit));
-    form.append("separate_vocals", String(separateVocals));
-    form.append("denoise", "true");
-    if (model) form.append("model", model);
-
-    try {
-      const res = await fetch("/api/search", { method: "POST", body: form });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new Error(err.detail ?? "Search failed");
-      }
-      const data: SearchResponse = await res.json();
-      setResults(data.results);
-      setModelUsed(data.model_used ?? "");
-      setElapsedSeconds(data.elapsed_seconds ?? null);
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : tCommon("unknown_error"));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  function handleClear() {
-    setFile(null);
-    setResults([]);
-    setError(null);
-    setModelUsed("");
-    setElapsedSeconds(null);
-  }
+  const { search } = useBackgroundTasks();
+  const {
+    file,
+    loading,
+    results,
+    error,
+    model,
+    limit,
+    modelUsed,
+    separateVocals,
+    elapsedSeconds,
+    setFile,
+    setModel,
+    setLimit,
+    setSeparateVocals,
+    clear,
+    start,
+  } = search;
 
   return (
     <div className="space-y-8">
@@ -102,8 +56,9 @@ export default function SearchPage() {
         <AudioUploader
           id="audio-query"
           label={t("query_label")}
+          files={file ? [file] : []}
           onFile={setFile}
-          onClear={handleClear}
+          onClear={clear}
         />
       </div>
 
@@ -113,7 +68,9 @@ export default function SearchPage() {
         style={{ animationDelay: "120ms" }}
       >
         <Button
-          onClick={handleSearch}
+          onClick={() => {
+            void start();
+          }}
           disabled={!file || loading}
           size="lg"
           className="w-full sm:w-auto"
