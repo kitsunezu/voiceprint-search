@@ -7,6 +7,7 @@ audio-separator based MDX / Roformer models.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import logging
 import os
@@ -15,11 +16,24 @@ import signal
 import shutil
 import subprocess
 import tempfile
+import time
+import uuid
+
+from redis import Redis
 
 from app.config import SeparatorProfile, Settings, settings
 from app.core.audio import get_audio_duration, resolve_trim_window
 
 logger = logging.getLogger(__name__)
+
+_SEPARATOR_SLOT_PREFIX = "voiceprint:separator-slot:"
+_SEPARATOR_RELEASE_SCRIPT = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('del', KEYS[1])
+end
+return 0
+"""
+_separator_redis_client: Redis | None = None
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
@@ -91,6 +105,13 @@ def _with_repo_pythonpath(env: dict[str, str] | None = None) -> dict[str, str]:
     return merged
 
 
+def _get_separator_redis_client(redis_url: str) -> Redis:
+    global _separator_redis_client
+    if _separator_redis_client is None:
+        _separator_redis_client = Redis.from_url(redis_url, decode_responses=True)
+    return _separator_redis_client
+
+
 class VocalSeparator:
     """Strip accompaniment, returning a vocals-only WAV for the active profile."""
 
@@ -125,7 +146,8 @@ class VocalSeparator:
                 logger.info("Vocal separation cache hit profile=%s", self.profile.id)
                 return cached, work_dir
 
-            vocals_path = self._run_backend(trimmed, work_dir)
+            with self._limit_concurrency():
+                vocals_path = self._run_backend(trimmed, work_dir)
             if vocals_path is None or not os.path.exists(vocals_path):
                 logger.warning(
                     "Separator profile %s produced no vocals output — falling back.",
@@ -150,6 +172,71 @@ class VocalSeparator:
                 self.profile.backend,
             )
             return wav_path, work_dir
+
+    @contextmanager
+    def _limit_concurrency(self):
+        max_slots = max(1, int(self.cfg.separator_max_concurrent_jobs))
+        lease_key: str | None = None
+        token = uuid.uuid4().hex
+        wait_logged = False
+        client: Redis | None = None
+
+        try:
+            client = _get_separator_redis_client(self.cfg.redis_url)
+        except Exception:
+            logger.warning(
+                "Separator concurrency control unavailable; continuing without global throttling.",
+                exc_info=True,
+            )
+            yield
+            return
+
+        lease_ttl_seconds = max(self.cfg.separator_timeout_seconds + 120, 300)
+        wait_started = time.monotonic()
+
+        while lease_key is None:
+            for slot in range(max_slots):
+                candidate_key = f"{_SEPARATOR_SLOT_PREFIX}{slot}"
+                try:
+                    acquired = client.set(candidate_key, token, nx=True, ex=lease_ttl_seconds)
+                except Exception:
+                    logger.warning(
+                        "Separator concurrency control failed mid-wait; continuing without global throttling.",
+                        exc_info=True,
+                    )
+                    yield
+                    return
+                if acquired:
+                    lease_key = candidate_key
+                    break
+
+            if lease_key is not None:
+                waited = time.monotonic() - wait_started
+                if waited >= 1.0:
+                    logger.info(
+                        "Acquired separator slot after waiting %.1fs (max_concurrent=%d)",
+                        waited,
+                        max_slots,
+                    )
+                break
+
+            if not wait_logged:
+                logger.info(
+                    "Waiting for separator capacity (max_concurrent=%d)",
+                    max_slots,
+                )
+                wait_logged = True
+            time.sleep(1.0)
+
+        try:
+            yield
+        finally:
+            if lease_key is None or client is None:
+                return
+            try:
+                client.eval(_SEPARATOR_RELEASE_SCRIPT, 1, lease_key, token)
+            except Exception:
+                logger.debug("Failed to release separator slot %s", lease_key, exc_info=True)
 
     def _trim_input(self, wav_path: str, work_dir: str) -> str:
         try:

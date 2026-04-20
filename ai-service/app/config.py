@@ -145,6 +145,7 @@ class Settings(BaseSettings):
     separator_model_dir: str = "/models/separators"   # persistent model cache for separators
     separator_cache_dir: str = "/tmp/voiceprint-separator-cache"
     separator_cache_enabled: bool = True
+    separator_max_concurrent_jobs: int = 1
     separator_max_seconds: int = 240
     separator_timeout_seconds: int = 180
 
