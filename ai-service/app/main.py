@@ -5,6 +5,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from sqlalchemy import text
 
 from app.config import settings
 from app.core.telemetry import setup_telemetry
@@ -20,6 +21,7 @@ from app.storage.minio_client import init_minio
 from app.api.router import api_router
 
 logger = logging.getLogger(__name__)
+_HOUSEKEEP_ADVISORY_LOCK_KEY = 351271
 
 
 async def _run_housekeep_loop(app: FastAPI) -> None:
@@ -30,6 +32,17 @@ async def _run_housekeep_loop(app: FastAPI) -> None:
     while True:
         try:
             async with async_session_factory() as db:
+                acquired = bool(
+                    await db.scalar(
+                        text("SELECT pg_try_advisory_xact_lock(:lock_key)"),
+                        {"lock_key": _HOUSEKEEP_ADVISORY_LOCK_KEY},
+                    )
+                )
+                if not acquired:
+                    await db.rollback()
+                    await asyncio.sleep(interval_seconds)
+                    continue
+
                 result = await run_housekeep(db, app.state.minio)
             logger.info(
                 "Scheduled housekeep completed deleted_db_assets=%s deleted_minio_objects=%s deleted_embeddings=%s",

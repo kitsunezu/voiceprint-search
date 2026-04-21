@@ -39,6 +39,8 @@ except ImportError:
 from opentelemetry.instrumentation.logging import LoggingInstrumentor
 
 _logger = logging.getLogger(__name__)
+_ROOT_LOGGER_CONFIG_ATTR = "_voiceprint_otel_config"
+_OTEL_HANDLER_ATTR = "_voiceprint_otel_handler"
 
 
 def setup_telemetry(service_name: str, endpoint: str) -> None:
@@ -54,6 +56,19 @@ def setup_telemetry(service_name: str, endpoint: str) -> None:
         root_logger.setLevel(logging.INFO)
 
     base = endpoint.rstrip("/")
+    existing_config = getattr(root_logger, _ROOT_LOGGER_CONFIG_ATTR, None)
+    if existing_config:
+        if existing_config == (service_name, base):
+            return
+
+        _logger.warning(
+            "OpenTelemetry already initialised for %s (service=%s); skipping reinitialisation for %s",
+            existing_config[1],
+            existing_config[0],
+            service_name,
+        )
+        return
+
     resource = Resource.create({"service.name": service_name})
 
     # ── Traces ────────────────────────────────────────────────────────────
@@ -85,10 +100,15 @@ def setup_telemetry(service_name: str, endpoint: str) -> None:
             set_logger_provider(log_provider)  # type: ignore[possibly-undefined]
 
             # Bridge Python root logging → OTEL (INFO and above sent to SigNoz)
-            otel_handler = LoggingHandler(  # type: ignore[possibly-undefined]
-                level=logging.INFO, logger_provider=log_provider
-            )
-            logging.getLogger().addHandler(otel_handler)
+            if not any(
+                getattr(handler, _OTEL_HANDLER_ATTR, False)
+                for handler in root_logger.handlers
+            ):
+                otel_handler = LoggingHandler(  # type: ignore[possibly-undefined]
+                    level=logging.INFO, logger_provider=log_provider
+                )
+                setattr(otel_handler, _OTEL_HANDLER_ATTR, True)
+                root_logger.addHandler(otel_handler)
         except Exception as exc:
             _logger.warning("OTEL log setup failed, skipping: %s", exc)
 
@@ -97,6 +117,8 @@ def setup_telemetry(service_name: str, endpoint: str) -> None:
         LoggingInstrumentor().instrument(set_logging_format=True)
     except Exception as exc:
         _logger.warning("LoggingInstrumentor skipped: %s", exc)
+
+    setattr(root_logger, _ROOT_LOGGER_CONFIG_ATTR, (service_name, base))
 
     _logger.info(
         "OpenTelemetry initialised → %s (service=%s, logs=%s)",
