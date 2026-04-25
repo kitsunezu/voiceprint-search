@@ -49,6 +49,11 @@ class Embedding(Base):
     vector = mapped_column(Vector())
     model_version: Mapped[str] = mapped_column(String(100), default="ecapa-tdnn-v1")
     embedding_dim: Mapped[int] = mapped_column(Integer, default=192)
+    window_index: Mapped[int | None] = mapped_column(Integer, default=None)
+    window_start_seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    window_duration_seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    speech_seconds: Mapped[float | None] = mapped_column(Float, default=None)
+    weight: Mapped[float] = mapped_column(Float, default=1.0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
 
     speaker: Mapped["Speaker"] = relationship(back_populates="embeddings")

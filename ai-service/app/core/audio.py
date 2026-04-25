@@ -3,10 +3,18 @@
 import os
 import subprocess
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 
 SUPPORTED_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".webm", ".aac", ".wma"}
+
+
+@dataclass(frozen=True)
+class PlannedAudioWindow:
+    index: int
+    start_seconds: float
+    duration_seconds: float
 
 
 def resolve_trim_window(
@@ -30,6 +38,78 @@ def resolve_trim_window(
     # Skip the earliest intro/jingle portion, but never run past the file end.
     start = min(total_duration_seconds * 0.10, total_duration_seconds - limit)
     return start, limit
+
+
+def plan_profile_windows(
+    total_duration_seconds: float | None,
+    *,
+    window_seconds: int | float,
+    max_windows: int,
+    skip_intro_ratio: float = 0.10,
+) -> list[PlannedAudioWindow]:
+    """Return deterministic reference windows spanning long assets.
+
+    Short assets produce a single full-length window. Longer assets produce up
+    to *max_windows* evenly spaced windows after skipping a small intro slice.
+    """
+    duration = float(total_duration_seconds) if total_duration_seconds is not None else None
+    window = max(float(window_seconds), 1.0)
+    max_count = max(int(max_windows), 1)
+    intro_ratio = max(0.0, min(float(skip_intro_ratio), 0.9))
+
+    if duration is None or duration <= window:
+        effective_duration = duration if duration is not None else window
+        return [PlannedAudioWindow(index=0, start_seconds=0.0, duration_seconds=effective_duration)]
+
+    latest_start = max(duration - window, 0.0)
+    first_start = min(duration * intro_ratio, latest_start)
+    if max_count == 1 or latest_start <= first_start:
+        return [PlannedAudioWindow(index=0, start_seconds=first_start, duration_seconds=window)]
+
+    step = (latest_start - first_start) / (max_count - 1)
+    windows: list[PlannedAudioWindow] = []
+    for idx in range(max_count):
+        start = first_start + (step * idx)
+        if idx == max_count - 1:
+            start = latest_start
+        windows.append(
+            PlannedAudioWindow(
+                index=idx,
+                start_seconds=round(max(0.0, start), 3),
+                duration_seconds=window,
+            )
+        )
+    return windows
+
+
+def extract_audio_window(
+    input_path: str,
+    *,
+    start_seconds: float,
+    duration_seconds: float,
+    output_path: str | None = None,
+) -> str:
+    """Extract a single time window without altering fidelity."""
+    if output_path is None:
+        fd, output_path = tempfile.mkstemp(
+            suffix=".wav",
+            dir=os.path.dirname(os.path.abspath(input_path)) or None,
+        )
+        os.close(fd)
+
+    cmd = ["ffmpeg"]
+    if start_seconds > 0:
+        cmd += ["-ss", f"{start_seconds:.3f}"]
+    cmd += ["-i", str(input_path)]
+    if duration_seconds > 0:
+        cmd += ["-t", f"{duration_seconds:.3f}"]
+    cmd += ["-vn", "-c:a", "pcm_s16le", "-y", output_path]
+    result = subprocess.run(cmd, capture_output=True, timeout=120)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"FFmpeg window extract failed (exit {result.returncode}): {result.stderr.decode(errors='replace')[:500]}"
+        )
+    return output_path
 
 
 def normalize_audio(

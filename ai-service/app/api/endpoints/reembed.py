@@ -1,11 +1,10 @@
-"""Re-embed all existing audio assets for all currently loaded models.
+"""Rebuild existing audio assets for all currently loaded models.
 
 POST /api/v1/reembed
 
 Iterates every AudioAsset row, downloads the original file from MinIO,
-runs the mandatory preprocessing pipeline + each loaded embedder, and
-inserts any missing Embedding rows.  Useful after adding a new model or
-switching default models.
+runs the long-form reference profile builder + each loaded embedder, and
+recreates the Embedding rows for that asset when overwrite mode is enabled.
 """
 
 import logging
@@ -19,9 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_embedder_registry, get_minio, get_preprocessor
 from app.config import settings
-from app.core.embedder import EmbedderRegistry, embed_segments
-from app.core.preprocessing import AudioPreprocessor, PreprocessError
-from app.db import repository as repo
+from app.core.embedder import EmbedderRegistry
+from app.core.preprocessing import AudioPreprocessor
+from app.core.reference_profiles import build_reference_profile, persist_reference_embeddings
 from app.db.models import AudioAsset, Embedding
 from minio import Minio
 
@@ -35,21 +34,18 @@ async def reembed_all(
     registry: EmbedderRegistry = Depends(get_embedder_registry),
     minio_client: Minio = Depends(get_minio),
     preprocessor: AudioPreprocessor = Depends(get_preprocessor),
+    overwrite: bool = True,
 ):
-    """Compute and store missing embeddings for every audio asset × loaded model."""
-    counts = {"created": 0, "skipped": 0, "errors": 0}
+    """Rebuild embeddings for every enrolled audio asset using windowed references."""
+    counts = {"created": 0, "skipped": 0, "deleted": 0, "errors": 0}
 
     stmt = select(AudioAsset).where(AudioAsset.speaker_id.isnot(None))
     assets = list((await db.execute(stmt)).scalars().all())
 
     for asset in assets:
-        existing_stmt = select(Embedding.model_version).where(
-            Embedding.audio_asset_id == asset.id
-        )
-        existing = set((await db.execute(existing_stmt)).scalars().all())
-
-        missing = [mid for mid in registry.available_ids if mid not in existing]
-        if not missing:
+        existing_stmt = select(Embedding.id).where(Embedding.audio_asset_id == asset.id)
+        existing_ids = list((await db.execute(existing_stmt)).scalars().all())
+        if not overwrite and existing_ids:
             counts["skipped"] += 1
             continue
 
@@ -59,29 +55,36 @@ async def reembed_all(
             tmp_path = os.path.join(tmp_dir, "audio.orig")
             minio_client.fget_object(settings.minio_bucket, asset.storage_key, tmp_path)
 
-            try:
-                result, pp_dirs = preprocessor.process(tmp_path)
-            except PreprocessError:
+            profile_windows, pp_dirs, asset_duration_seconds = build_reference_profile(
+                tmp_path,
+                preprocessor=preprocessor,
+                cfg=settings,
+            )
+            if not profile_windows:
                 logger.warning("reembed: asset=%d — no usable speech, skipping", asset.id)
                 counts["errors"] += 1
                 continue
             cleanup_dirs.extend(pp_dirs)
+            if asset_duration_seconds is not None:
+                asset.duration_seconds = float(asset_duration_seconds)
 
-            for mid in missing:
-                try:
-                    vec = embed_segments(registry.get(mid), result.segments)
-                    await repo.create_embedding(
-                        db,
-                        speaker_id=asset.speaker_id,
-                        audio_asset_id=asset.id,
-                        vector=vec,
-                        model_version=mid,
-                    )
-                    counts["created"] += 1
-                    logger.info("reembed: asset=%d model=%s OK", asset.id, mid)
-                except Exception:
-                    logger.exception("reembed: asset=%d model=%s FAILED", asset.id, mid)
-                    counts["errors"] += 1
+            result = await persist_reference_embeddings(
+                db,
+                asset_id=asset.id,
+                speaker_id=asset.speaker_id,
+                available_models=registry.available_ids,
+                registry=registry,
+                profile_windows=profile_windows,
+                overwrite=overwrite,
+            )
+            counts["created"] += int(result["created"])
+            counts["errors"] += len(result["failures"])
+            if overwrite:
+                counts["deleted"] += len(existing_ids)
+            if result["created"]:
+                logger.info("reembed: asset=%d rebuilt %d embeddings", asset.id, int(result["created"]))
+            else:
+                counts["skipped"] += 1
 
         except Exception:
             logger.exception("reembed: failed to process asset %d", asset.id)

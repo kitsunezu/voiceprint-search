@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 import numpy as np
-from sqlalchemy import case, select, func, text
+from sqlalchemy import case, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.embedder import weighted_average_embeddings
 from app.db.models import Speaker, AudioAsset, Embedding
 
 
@@ -117,6 +120,11 @@ async def create_embedding(
     audio_asset_id: int,
     vector: np.ndarray,
     model_version: str = "ecapa-tdnn-v1",
+    window_index: int | None = None,
+    window_start_seconds: float | None = None,
+    window_duration_seconds: float | None = None,
+    speech_seconds: float | None = None,
+    weight: float = 1.0,
 ) -> Embedding:
     emb = Embedding(
         speaker_id=speaker_id,
@@ -124,10 +132,31 @@ async def create_embedding(
         vector=vector.tolist(),
         model_version=model_version,
         embedding_dim=len(vector),
+        window_index=window_index,
+        window_start_seconds=window_start_seconds,
+        window_duration_seconds=window_duration_seconds,
+        speech_seconds=speech_seconds,
+        weight=weight,
     )
     session.add(emb)
     await session.flush()
     return emb
+
+
+async def delete_embeddings_for_audio_asset(
+    session: AsyncSession,
+    *,
+    asset_id: int,
+    model_versions: list[str] | None = None,
+) -> int:
+    stmt = select(Embedding).where(Embedding.audio_asset_id == asset_id)
+    if model_versions:
+        stmt = stmt.where(Embedding.model_version.in_(model_versions))
+    rows = list((await session.execute(stmt)).scalars().all())
+    for row in rows:
+        await session.delete(row)
+    await session.flush()
+    return len(rows)
 
 
 async def get_speaker_embeddings(session: AsyncSession, speaker_id: int) -> list[Embedding]:
@@ -262,7 +291,7 @@ async def search_similar(
     hybrid_best_weight: float = 0.7,
     hybrid_centroid_weight: float = 0.3,
 ) -> list[dict]:
-    """Find the closest enrolled speakers using pgvector cosine distance.
+    """Find the closest enrolled speakers using weighted speaker aggregation.
 
     Supports three aggregation modes:
 
@@ -273,98 +302,50 @@ async def search_similar(
     When *model_version* is provided, only embeddings from that model are
     searched — necessary for correct multi-model support.
     """
-    vec_literal = "[" + ",".join(str(float(v)) for v in query_vector) + "]"
     strategy = strategy.strip().lower() or "best"
     if strategy not in {"best", "centroid", "hybrid"}:
         strategy = "best"
-
-    model_filter = "WHERE e.model_version = :model_version" if model_version else ""
-
-    if strategy == "best":
-        stmt = text(f"""
-        WITH ranked AS (
-            SELECT
-                e.speaker_id,
-                s.name          AS speaker_name,
-                1 - (e.vector <=> :vec) AS similarity,
-                ROW_NUMBER() OVER (
-                    PARTITION BY e.speaker_id
-                    ORDER BY e.vector <=> :vec
-                ) AS rn
-            FROM embeddings e
-            JOIN speakers s ON s.id = e.speaker_id
-            {model_filter}
-        )
-        SELECT speaker_id, speaker_name, similarity
-        FROM ranked
-        WHERE rn = 1
-        ORDER BY similarity DESC
-        LIMIT :lim
-        """)
-    else:
-        stmt = text(f"""
-        WITH per_embedding AS (
-            SELECT
-                e.speaker_id,
-                s.name AS speaker_name,
-                1 - (e.vector <=> :vec) AS similarity,
-                e.vector AS vector
-            FROM embeddings e
-            JOIN speakers s ON s.id = e.speaker_id
-            {model_filter}
-        ),
-        best AS (
-            SELECT
-                speaker_id,
-                speaker_name,
-                MAX(similarity) AS best_similarity
-            FROM per_embedding
-            GROUP BY speaker_id, speaker_name
-        ),
-        centroids AS (
-            SELECT
-                e.speaker_id,
-                s.name AS speaker_name,
-                1 - (AVG(e.vector) <=> :vec) AS centroid_similarity
-            FROM embeddings e
-            JOIN speakers s ON s.id = e.speaker_id
-            {model_filter}
-            GROUP BY e.speaker_id, s.name
-        )
-        SELECT
-            b.speaker_id,
-            b.speaker_name,
-            CASE
-                WHEN :strategy = 'centroid' THEN c.centroid_similarity
-                ELSE (:best_weight * b.best_similarity) + (:centroid_weight * c.centroid_similarity)
-            END AS similarity,
-            b.best_similarity,
-            c.centroid_similarity
-        FROM best b
-        JOIN centroids c ON c.speaker_id = b.speaker_id
-        ORDER BY similarity DESC
-        LIMIT :lim
-        """)
-
-    params: dict = {
-        "vec": vec_literal,
-        "lim": limit,
-        "strategy": strategy,
-        "best_weight": hybrid_best_weight,
-        "centroid_weight": hybrid_centroid_weight,
-    }
+    stmt = select(Embedding, Speaker.name).join(Speaker, Speaker.id == Embedding.speaker_id)
     if model_version:
-        params["model_version"] = model_version
+        stmt = stmt.where(Embedding.model_version == model_version)
 
-    rows = (await session.execute(stmt, params)).all()
+    rows = (await session.execute(stmt)).all()
+    grouped: dict[int, dict[str, object]] = defaultdict(lambda: {"name": "", "rows": []})
+    for embedding, speaker_name in rows:
+        grouped[int(embedding.speaker_id)]["name"] = speaker_name
+        grouped[int(embedding.speaker_id)]["rows"].append(embedding)
 
-    return [
-        {
-            "speaker_id": r.speaker_id,
-            "speaker_name": r.speaker_name,
-            "score": float(r.similarity),
-            "best_score": float(r.best_similarity) if hasattr(r, "best_similarity") and r.best_similarity is not None else None,
-            "centroid_score": float(r.centroid_similarity) if hasattr(r, "centroid_similarity") and r.centroid_similarity is not None else None,
-        }
-        for r in rows
-    ]
+    ranked: list[dict] = []
+    for speaker_id, payload in grouped.items():
+        speaker_rows = payload["rows"]
+        vectors = [np.array(row.vector) for row in speaker_rows]
+        weights = [float(row.weight or 1.0) for row in speaker_rows]
+        best_score = max(
+            float(np.dot(query_vector, vector) / ((np.linalg.norm(query_vector) or 1.0) * (np.linalg.norm(vector) or 1.0)))
+            for vector in vectors
+        )
+        centroid_vector = weighted_average_embeddings(vectors, weights=weights)
+        centroid_score = float(
+            np.dot(query_vector, centroid_vector)
+            / ((np.linalg.norm(query_vector) or 1.0) * (np.linalg.norm(centroid_vector) or 1.0))
+        )
+
+        if strategy == "centroid":
+            score = centroid_score
+        elif strategy == "hybrid":
+            score = (hybrid_best_weight * best_score) + (hybrid_centroid_weight * centroid_score)
+        else:
+            score = best_score
+
+        ranked.append(
+            {
+                "speaker_id": speaker_id,
+                "speaker_name": str(payload["name"]),
+                "score": float(score),
+                "best_score": float(best_score),
+                "centroid_score": float(centroid_score),
+            }
+        )
+
+    ranked.sort(key=lambda row: row["score"], reverse=True)
+    return ranked[:limit]

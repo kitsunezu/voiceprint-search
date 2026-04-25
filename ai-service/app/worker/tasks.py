@@ -17,8 +17,9 @@ from sqlalchemy import select
 from app.config import settings
 from app.core.calibration import CalibratorRegistry
 from app.core.denoise import Denoiser
-from app.core.embedder import EmbedderRegistry, embed_segments
+from app.core.embedder import EmbedderRegistry
 from app.core.preprocessing import AudioPreprocessor, PreprocessError
+from app.core.reference_profiles import build_reference_profile, persist_reference_embeddings
 from app.core.separator import VocalSeparator
 from app.core.telemetry import setup_telemetry
 from app.core.vad import VoiceActivityDetector
@@ -191,7 +192,7 @@ def process_verify_job(payload: dict):
 
 @dramatiq.actor(max_retries=3, min_backoff=10_000)
 def process_audio_asset_embeddings(asset_id: int):
-    """Compute missing embeddings for a stored raw audio asset in the background."""
+    """Compute windowed reference embeddings for a stored raw audio asset."""
     if asset_id <= 0:
         logger.error("Invalid audio asset id: %s", asset_id)
         return
@@ -210,9 +211,13 @@ def process_audio_asset_embeddings(asset_id: int):
         raw_path = os.path.join(tmp_dir, "audio.orig")
         download_file(minio_client, asset_snapshot["storage_key"], raw_path)
 
-        try:
-            result, pp_dirs = runtime.preprocessor.process(raw_path)
-        except PreprocessError as exc:
+        profile_windows, pp_dirs, asset_duration_seconds = build_reference_profile(
+            raw_path,
+            preprocessor=runtime.preprocessor,
+            cfg=settings,
+        )
+        if not profile_windows:
+            exc = PreprocessError("No usable speech detected in the audio.")
             logger.warning("asset=%d — no usable speech, skipping background embedding", asset_id)
             asyncio.run(
                 _set_audio_asset_processing_state(
@@ -224,7 +229,6 @@ def process_audio_asset_embeddings(asset_id: int):
                 )
             )
             return
-
         cleanup_dirs.extend(pp_dirs)
 
         asyncio.run(
@@ -233,7 +237,8 @@ def process_audio_asset_embeddings(asset_id: int):
                 speaker_id=int(asset_snapshot["speaker_id"]),
                 available_models=runtime.registry.available_ids,
                 registry=runtime.registry,
-                segments=result.segments,
+                profile_windows=profile_windows,
+                asset_duration_seconds=asset_duration_seconds,
             )
         )
     except Exception as exc:
@@ -307,41 +312,34 @@ async def _persist_audio_asset_embeddings(
     speaker_id: int,
     available_models: list[str],
     registry: EmbedderRegistry,
-    segments,
+    profile_windows,
+    asset_duration_seconds: float | None,
 ) -> None:
     async with async_session_factory() as db:
         asset = await db.get(AudioAsset, asset_id)
         if asset is None or asset.speaker_id is None:
             return
 
-        existing_stmt = select(Embedding.model_version).where(Embedding.audio_asset_id == asset.id)
-        existing = set((await db.execute(existing_stmt)).scalars().all())
-        missing = [model_id for model_id in available_models if model_id not in existing]
-        if not missing:
+        if asset_duration_seconds is not None:
+            asset.duration_seconds = float(asset_duration_seconds)
+
+        result = await persist_reference_embeddings(
+            db,
+            asset_id=asset.id,
+            speaker_id=speaker_id,
+            available_models=available_models,
+            registry=registry,
+            profile_windows=profile_windows,
+            overwrite=False,
+        )
+        failures = list(result["failures"])
+        created = int(result["created"])
+        if created == 0 and not failures:
             asset.processing_status = "succeeded"
             asset.processing_error = None
             asset.processing_finished_at = datetime.now(timezone.utc)
             await db.commit()
             return
-
-        failures: list[str] = []
-        for model_id in missing:
-            try:
-                vector = embed_segments(registry.get(model_id), segments)
-                await repo.create_embedding(
-                    db,
-                    speaker_id=speaker_id,
-                    audio_asset_id=asset.id,
-                    vector=vector,
-                    model_version=model_id,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to create background embedding for audio asset %d (%s)",
-                    asset_id,
-                    model_id,
-                )
-                failures.append(f"{model_id}: embedding failed")
 
         asset.has_speech = True
         asset.processing_finished_at = datetime.now(timezone.utc)

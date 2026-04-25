@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.calibration import ScoreCalibrator
 from app.core.embedder import BaseEmbedder, embed_segments
 from app.core.preprocessing import AudioPreprocessor, PreprocessError
+from app.core.reference_profiles import weighted_reference_embedding
 from app.core.voice_features import compare_voice_characteristics
 from app.db import repository as repo
 
@@ -35,8 +36,7 @@ async def load_speaker_reference_embedding(
     if not same_model:
         same_model = enrolled
 
-    vectors = [np.array(e.vector) for e in same_model]
-    return np.mean(vectors, axis=0)
+    return weighted_reference_embedding(same_model)
 
 
 async def run_verify_pipeline(

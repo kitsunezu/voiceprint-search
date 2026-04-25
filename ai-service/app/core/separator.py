@@ -128,7 +128,12 @@ class VocalSeparator:
         if self.cfg.separator_cache_enabled:
             os.makedirs(self.cache_dir, exist_ok=True)
 
-    def separate(self, wav_path: str) -> tuple[str, str]:
+    def separate(
+        self,
+        wav_path: str,
+        *,
+        max_duration_seconds: int | float | None | object = ...,
+    ) -> tuple[str, str]:
         """Run vocal separation on *wav_path*.
 
         Returns ``(vocals_wav_path, work_dir)``.  The caller **must** call
@@ -139,8 +144,9 @@ class VocalSeparator:
         """
         work_dir = tempfile.mkdtemp(prefix=f"{self.profile.id}_")
         try:
-            trimmed = self._trim_input(wav_path, work_dir)
-            cache_key = self._build_cache_key(trimmed)
+            trim_limit = self.cfg.separator_max_seconds if max_duration_seconds is ... else max_duration_seconds
+            trimmed = self._trim_input(wav_path, work_dir, max_duration_seconds=trim_limit)
+            cache_key = self._build_cache_key(trimmed, max_duration_seconds=trim_limit)
             cached = self._restore_cached_output(cache_key, work_dir)
             if cached is not None:
                 logger.info("Vocal separation cache hit profile=%s", self.profile.id)
@@ -238,13 +244,19 @@ class VocalSeparator:
             except Exception:
                 logger.debug("Failed to release separator slot %s", lease_key, exc_info=True)
 
-    def _trim_input(self, wav_path: str, work_dir: str) -> str:
+    def _trim_input(
+        self,
+        wav_path: str,
+        work_dir: str,
+        *,
+        max_duration_seconds: int | float | None,
+    ) -> str:
         try:
             duration = get_audio_duration(wav_path)
         except Exception:
             duration = None
 
-        start, limit = resolve_trim_window(duration, self.cfg.separator_max_seconds)
+        start, limit = resolve_trim_window(duration, max_duration_seconds)
 
         # Keep the full-fidelity source whenever it already fits in the
         # separator window. Separation quality drops noticeably if we pre-downsample.
@@ -388,13 +400,13 @@ class VocalSeparator:
             return None
         return str(candidates[0])
 
-    def _build_cache_key(self, trimmed_path: str) -> str:
+    def _build_cache_key(self, trimmed_path: str, *, max_duration_seconds: int | float | None) -> str:
         digest = hashlib.sha1()
         digest.update(self.profile.backend.encode("utf-8"))
         digest.update(b"\0")
         digest.update(self.profile.model.encode("utf-8"))
         digest.update(b"\0")
-        digest.update(str(self.cfg.separator_max_seconds).encode("utf-8"))
+        digest.update(str(max_duration_seconds).encode("utf-8"))
         with open(trimmed_path, "rb") as handle:
             while True:
                 chunk = handle.read(1024 * 1024)

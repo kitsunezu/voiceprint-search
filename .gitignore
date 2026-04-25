@@ -41,3 +41,4 @@ tmpapitest/
 .tmp-bench/
 .tmp-mdx-models/
 .tmp-mdx-out/
+tmp/benchmark_subset_weighted/

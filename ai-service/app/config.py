@@ -138,6 +138,10 @@ class Settings(BaseSettings):
     preprocess_segment_step_seconds: float = 3.0    # hop between windows (overlap = seg-step)
     preprocess_short_repeat: bool = True      # repeat-pad speech shorter than min to reach min
     preprocess_reject_no_speech: bool = True  # raise error when no speech detected at all
+    profile_window_seconds: int = 240         # full-fidelity reference window length for long enroll assets
+    profile_max_windows: int = 6              # max retained reference windows per audio asset
+    profile_skip_intro_ratio: float = 0.10    # skip common intro/jingle portion before planning windows
+    profile_weight_power: float = 1.0         # weight curve applied to VAD speech seconds per window
 
     # ── Vocal separation ──────────────────────────────────────────────────
     separator_profile: str = "demucs"                 # demucs | mdx | roformer
@@ -148,6 +152,10 @@ class Settings(BaseSettings):
     separator_max_concurrent_jobs: int = 1
     separator_max_seconds: int = 240
     separator_timeout_seconds: int = 180
+
+    # ── Background worker throughput ─────────────────────────────────────
+    background_worker_processes: int = 1
+    background_worker_threads: int = 1
 
     # ── Search aggregation ────────────────────────────────────────────────
     search_strategy: str = "hybrid"          # best | centroid | hybrid
@@ -186,6 +194,10 @@ class Settings(BaseSettings):
             if m.id == model_id:
                 return m
         return None
+
+    @property
+    def max_concurrent_background_audio_jobs(self) -> int:
+        return max(1, int(self.background_worker_processes)) * max(1, int(self.background_worker_threads))
 
     def get_separator_profile(
         self,

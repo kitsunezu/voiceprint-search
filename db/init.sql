@@ -33,6 +33,11 @@ CREATE TABLE embeddings (
     vector          vector,          -- dimensionless; actual dim stored in embedding_dim
     model_version   VARCHAR(100) NOT NULL DEFAULT 'ecapa-tdnn-v1',
     embedding_dim   INTEGER NOT NULL DEFAULT 192,
+    window_index    INTEGER,
+    window_start_seconds REAL,
+    window_duration_seconds REAL,
+    speech_seconds  REAL,
+    weight          REAL NOT NULL DEFAULT 1.0,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -45,5 +50,6 @@ CREATE TABLE embeddings (
 
 -- Useful for per-speaker lookups
 CREATE INDEX idx_embeddings_speaker ON embeddings (speaker_id);
+CREATE INDEX idx_embeddings_asset_model_window ON embeddings (audio_asset_id, model_version, window_index);
 CREATE INDEX idx_audio_assets_speaker ON audio_assets (speaker_id);
 CREATE INDEX idx_audio_assets_processing_status ON audio_assets (processing_status);

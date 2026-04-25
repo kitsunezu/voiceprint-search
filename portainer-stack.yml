@@ -40,6 +40,8 @@ services:
       SEPARATOR_CACHE_DIR: /tmp/voiceprint-separator-cache
       SEPARATOR_MAX_CONCURRENT_JOBS: ${SEPARATOR_MAX_CONCURRENT_JOBS:-1}
       SEPARATOR_MAX_SECONDS: ${SEPARATOR_MAX_SECONDS:-240}
+      BACKGROUND_WORKER_PROCESSES: ${BACKGROUND_WORKER_PROCESSES:-1}
+      BACKGROUND_WORKER_THREADS: ${BACKGROUND_WORKER_THREADS:-1}
       SEARCH_STRATEGY: ${SEARCH_STRATEGY:-hybrid}
       SEARCH_HYBRID_BEST_WEIGHT: ${SEARCH_HYBRID_BEST_WEIGHT:-0.7}
       SEARCH_HYBRID_CENTROID_WEIGHT: ${SEARCH_HYBRID_CENTROID_WEIGHT:-0.3}
@@ -73,7 +75,7 @@ services:
     pull_policy: always
     container_name: voiceprint-worker
     restart: unless-stopped
-    command: ["python", "-m", "dramatiq", "--processes", "1", "--threads", "1", "app.worker.tasks"]
+    command: ["python", "-m", "dramatiq", "--processes", "${BACKGROUND_WORKER_PROCESSES:-1}", "--threads", "${BACKGROUND_WORKER_THREADS:-1}", "app.worker.tasks"]
     environment:
       DATABASE_URL: postgresql+asyncpg://voiceprint:${DB_PASSWORD:-voiceprint}@db:5432/voiceprint
       REDIS_URL: redis://redis:6379/0
@@ -91,6 +93,8 @@ services:
       SEPARATOR_CACHE_DIR: /tmp/voiceprint-separator-cache
       SEPARATOR_MAX_CONCURRENT_JOBS: ${SEPARATOR_MAX_CONCURRENT_JOBS:-1}
       SEPARATOR_MAX_SECONDS: ${SEPARATOR_MAX_SECONDS:-240}
+      BACKGROUND_WORKER_PROCESSES: ${BACKGROUND_WORKER_PROCESSES:-1}
+      BACKGROUND_WORKER_THREADS: ${BACKGROUND_WORKER_THREADS:-1}
       SEARCH_STRATEGY: ${SEARCH_STRATEGY:-hybrid}
       SEARCH_HYBRID_BEST_WEIGHT: ${SEARCH_HYBRID_BEST_WEIGHT:-0.7}
       SEARCH_HYBRID_CENTROID_WEIGHT: ${SEARCH_HYBRID_CENTROID_WEIGHT:-0.3}

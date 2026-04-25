@@ -93,7 +93,19 @@ def _stream_audio_asset(
 @router.get("/speakers")
 async def list_speakers(db: AsyncSession = Depends(get_db)):
     speakers = await repo.list_speakers(db)
-    return {"speakers": speakers}
+    pending_audio_count = sum(int(speaker.get("pending_audio_count", 0)) for speaker in speakers)
+    running_audio_count = sum(int(speaker.get("running_audio_count", 0)) for speaker in speakers)
+    return {
+        "speakers": speakers,
+        "background_processing": {
+            "max_concurrent_audio_jobs": settings.max_concurrent_background_audio_jobs,
+            "worker_processes": max(1, int(settings.background_worker_processes)),
+            "worker_threads": max(1, int(settings.background_worker_threads)),
+            "separator_max_concurrent_jobs": max(1, int(settings.separator_max_concurrent_jobs)),
+            "pending_audio_count": pending_audio_count,
+            "running_audio_count": running_audio_count,
+        },
+    }
 
 
 @router.post("/speakers/housekeep")

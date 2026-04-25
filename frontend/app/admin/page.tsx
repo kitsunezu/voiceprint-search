@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import {
   AlertTriangle,
@@ -60,11 +60,73 @@ type DeletePreview = {
   original_filename?: string;
 };
 
+type BackgroundProcessingSummary = {
+  max_concurrent_audio_jobs: number;
+  worker_processes: number;
+  worker_threads: number;
+  separator_max_concurrent_jobs: number;
+  pending_audio_count: number;
+  running_audio_count: number;
+};
+
+const DEFAULT_BACKGROUND_SUMMARY: BackgroundProcessingSummary = {
+  max_concurrent_audio_jobs: 1,
+  worker_processes: 1,
+  worker_threads: 1,
+  separator_max_concurrent_jobs: 1,
+  pending_audio_count: 0,
+  running_audio_count: 0,
+};
+
+function parsePositiveInt(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.trunc(parsed);
+}
+
+function parseNonNegativeInt(value: unknown, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return Math.trunc(parsed);
+}
+
+function buildBackgroundSummary(payload: unknown, speakers: Speaker[]): BackgroundProcessingSummary {
+  const fallbackPending = speakers.reduce((sum, speaker) => sum + speaker.pending_audio_count, 0);
+  const fallbackRunning = speakers.reduce((sum, speaker) => sum + speaker.running_audio_count, 0);
+  const fallback = {
+    ...DEFAULT_BACKGROUND_SUMMARY,
+    pending_audio_count: fallbackPending,
+    running_audio_count: fallbackRunning,
+  };
+
+  if (!payload || typeof payload !== "object") {
+    return fallback;
+  }
+
+  const summary = payload as Partial<BackgroundProcessingSummary>;
+  return {
+    max_concurrent_audio_jobs: parsePositiveInt(summary.max_concurrent_audio_jobs, fallback.max_concurrent_audio_jobs),
+    worker_processes: parsePositiveInt(summary.worker_processes, fallback.worker_processes),
+    worker_threads: parsePositiveInt(summary.worker_threads, fallback.worker_threads),
+    separator_max_concurrent_jobs: parsePositiveInt(
+      summary.separator_max_concurrent_jobs,
+      fallback.separator_max_concurrent_jobs,
+    ),
+    pending_audio_count: parseNonNegativeInt(summary.pending_audio_count, fallback.pending_audio_count),
+    running_audio_count: parseNonNegativeInt(summary.running_audio_count, fallback.running_audio_count),
+  };
+}
+
 export default function AdminPage() {
   const t = useTranslations("admin");
   const tCommon = useTranslations("common");
 
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
+  const [backgroundSummary, setBackgroundSummary] = useState<BackgroundProcessingSummary>(DEFAULT_BACKGROUND_SUMMARY);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Record<number, string>>({});
@@ -72,10 +134,12 @@ export default function AdminPage() {
   const [deleting, setDeleting] = useState<number | null>(null);
   const [deletingAssetId, setDeletingAssetId] = useState<number | null>(null);
   const [housekeeping, setHousekeeping] = useState(false);
+  const [reembedding, setReembedding] = useState(false);
   const [expandedSpeakerIds, setExpandedSpeakerIds] = useState<Record<number, boolean>>({});
   const [speakerAssets, setSpeakerAssets] = useState<Record<number, SpeakerAudioAsset[]>>({});
   const [loadingAssets, setLoadingAssets] = useState<Record<number, boolean>>({});
   const [statusMsg, setStatusMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
+  const assetLoadsInFlightRef = useRef<Set<number>>(new Set());
 
   // New states for custom dialogs
   const [deleteSpeakerConfirm, setDeleteSpeakerConfirm] = useState<{
@@ -92,6 +156,17 @@ export default function AdminPage() {
   function toast(type: "ok" | "err", text: string) {
     setStatusMsg({ type, text });
     setTimeout(() => setStatusMsg(null), 3500);
+  }
+
+  function restoreScrollPosition(scrollTop: number) {
+    const restore = () => window.scrollTo({ top: scrollTop });
+
+    restore();
+    window.requestAnimationFrame(() => {
+      restore();
+      window.requestAnimationFrame(restore);
+    });
+    window.setTimeout(restore, 80);
   }
 
   function renderStatusBadges(speaker: Speaker) {
@@ -184,6 +259,7 @@ export default function AdminPage() {
       const next = Array.isArray(data.speakers) ? [...data.speakers] : [];
       next.sort((left, right) => right.id - left.id);
       setSpeakers(next);
+      setBackgroundSummary(buildBackgroundSummary(data.background_processing, next));
       setError(null);
     } catch (fetchError: unknown) {
       setError(fetchError instanceof Error ? fetchError.message : tCommon("unknown_error"));
@@ -194,8 +270,11 @@ export default function AdminPage() {
     }
   }
 
-  async function fetchSpeakerAssets(speakerId: number) {
-    setLoadingAssets((prev) => ({ ...prev, [speakerId]: true }));
+  async function fetchSpeakerAssets(speakerId: number, showLoading = true) {
+    assetLoadsInFlightRef.current.add(speakerId);
+    if (showLoading) {
+      setLoadingAssets((prev) => ({ ...prev, [speakerId]: true }));
+    }
 
     try {
       const res = await fetch(`/api/speakers/${speakerId}/audio-assets`);
@@ -208,15 +287,24 @@ export default function AdminPage() {
         ...prev,
         [speakerId]: Array.isArray(data.audio_assets) ? data.audio_assets : [],
       }));
+      return true;
     } catch (fetchError: unknown) {
       toast("err", fetchError instanceof Error ? fetchError.message : tCommon("unknown_error"));
+      return false;
     } finally {
-      setLoadingAssets((prev) => ({ ...prev, [speakerId]: false }));
+      assetLoadsInFlightRef.current.delete(speakerId);
+      if (showLoading) {
+        setLoadingAssets((prev) => ({ ...prev, [speakerId]: false }));
+      }
     }
   }
 
   useEffect(() => {
     void fetchSpeakers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
     const timer = window.setInterval(() => {
       void fetchSpeakers(false);
       Object.entries(expandedSpeakerIds)
@@ -243,11 +331,25 @@ export default function AdminPage() {
   }
 
   async function toggleSpeakerAssets(speakerId: number) {
-    const nextExpanded = !expandedSpeakerIds[speakerId];
-    setExpandedSpeakerIds((prev) => ({ ...prev, [speakerId]: nextExpanded }));
-    if (nextExpanded && !speakerAssets[speakerId]) {
-      await fetchSpeakerAssets(speakerId);
+    if (assetLoadsInFlightRef.current.has(speakerId)) {
+      return;
     }
+
+    const nextExpanded = !expandedSpeakerIds[speakerId];
+    if (nextExpanded && !speakerAssets[speakerId]) {
+      const scrollTop = window.scrollY;
+      restoreScrollPosition(scrollTop);
+      const loaded = await fetchSpeakerAssets(speakerId, false);
+      if (!loaded) {
+        return;
+      }
+
+      setExpandedSpeakerIds((prev) => ({ ...prev, [speakerId]: true }));
+      restoreScrollPosition(scrollTop);
+      return;
+    }
+
+    setExpandedSpeakerIds((prev) => ({ ...prev, [speakerId]: nextExpanded }));
   }
 
   async function saveRename(id: number) {
@@ -378,6 +480,38 @@ export default function AdminPage() {
     }
   }
 
+  async function runReembedAll() {
+    setReembedding(true);
+    try {
+      const res = await fetch("/api/reembed?overwrite=true", { method: "POST" });
+      const data = await res.json().catch(() => ({ detail: res.statusText }));
+      if (!res.ok) {
+        throw new Error(data.detail ?? tCommon("unknown_error"));
+      }
+
+      await fetchSpeakers(false);
+      await Promise.all(
+        Object.entries(expandedSpeakerIds)
+          .filter(([, expanded]) => expanded)
+          .map(([speakerId]) => fetchSpeakerAssets(Number(speakerId))),
+      );
+
+      toast(
+        "ok",
+        t("reembed_success", {
+          created: data.created ?? 0,
+          skipped: data.skipped ?? 0,
+          deleted: data.deleted ?? 0,
+          errors: data.errors ?? 0,
+        }),
+      );
+    } catch (reembedError: unknown) {
+      toast("err", reembedError instanceof Error ? reembedError.message : tCommon("unknown_error"));
+    } finally {
+      setReembedding(false);
+    }
+  }
+
   async function deleteAsset(speakerId: number, assetId: number, originalFilename: string) {
     try {
       const preview = await fetchAssetDeletePreview(speakerId, assetId);
@@ -425,20 +559,34 @@ export default function AdminPage() {
           <p className="mt-1 text-sm text-muted-foreground">{t("subtitle")}</p>
         </div>
 
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => void runHousekeep()}
-          disabled={housekeeping}
-          className="self-start"
-        >
-          {housekeeping ? (
-            <Loader2 className="mr-2 size-3.5 animate-spin" />
-          ) : (
-            <RefreshCcw className="mr-2 size-3.5" />
-          )}
-          {housekeeping ? t("housekeep_running") : t("housekeep")}
-        </Button>
+        <div className="flex flex-col gap-2 self-start sm:flex-row">
+          <Button
+            size="sm"
+            onClick={() => void runReembedAll()}
+            disabled={housekeeping || reembedding}
+          >
+            {reembedding ? (
+              <Loader2 className="mr-2 size-3.5 animate-spin" />
+            ) : (
+              <Mic2 className="mr-2 size-3.5" />
+            )}
+            {reembedding ? t("reembed_running") : t("reembed")}
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void runHousekeep()}
+            disabled={housekeeping || reembedding}
+          >
+            {housekeeping ? (
+              <Loader2 className="mr-2 size-3.5 animate-spin" />
+            ) : (
+              <RefreshCcw className="mr-2 size-3.5" />
+            )}
+            {housekeeping ? t("housekeep_running") : t("housekeep")}
+          </Button>
+        </div>
       </div>
 
       {statusMsg && (
@@ -451,6 +599,79 @@ export default function AdminPage() {
         >
           {statusMsg.text}
         </div>
+      )}
+
+      <div className="grid gap-3 md:grid-cols-3">
+        <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                {t("processing_capacity")}
+              </p>
+              <p className="mt-2 text-3xl font-semibold tabular-nums">
+                {backgroundSummary.max_concurrent_audio_jobs}
+              </p>
+            </div>
+            <div className="rounded-full bg-primary/10 p-2 text-primary">
+              <FileAudio className="size-4" />
+            </div>
+          </div>
+          <p className="mt-3 text-xs leading-5 text-muted-foreground">
+            {t("processing_capacity_hint", {
+              processes: backgroundSummary.worker_processes,
+              threads: backgroundSummary.worker_threads,
+            })}
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                {t("processing_load")}
+              </p>
+              <p className="mt-2 text-3xl font-semibold tabular-nums">
+                {backgroundSummary.running_audio_count}
+              </p>
+            </div>
+            <div className="rounded-full bg-amber-500/10 p-2 text-amber-600 dark:text-amber-400">
+              <Loader2 className={`size-4 ${backgroundSummary.running_audio_count > 0 ? "animate-spin" : ""}`} />
+            </div>
+          </div>
+          <p className="mt-3 text-xs leading-5 text-muted-foreground">
+            {t("processing_load_hint", {
+              pending: backgroundSummary.pending_audio_count,
+              capacity: backgroundSummary.max_concurrent_audio_jobs,
+            })}
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                {t("separator_capacity")}
+              </p>
+              <p className="mt-2 text-3xl font-semibold tabular-nums">
+                {backgroundSummary.separator_max_concurrent_jobs}
+              </p>
+            </div>
+            <div className="rounded-full bg-green-500/10 p-2 text-green-600 dark:text-green-400">
+              <Mic2 className="size-4" />
+            </div>
+          </div>
+          <p className="mt-3 text-xs leading-5 text-muted-foreground">
+            {t("separator_capacity_hint")}
+          </p>
+        </div>
+      </div>
+
+      {backgroundSummary.separator_max_concurrent_jobs < backgroundSummary.max_concurrent_audio_jobs && (
+        <p className="text-xs text-muted-foreground">
+          {t("processing_bottleneck_hint", {
+            count: backgroundSummary.separator_max_concurrent_jobs,
+          })}
+        </p>
       )}
 
       {loading && <p className="text-sm text-muted-foreground">{t("loading")}</p>}

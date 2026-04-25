@@ -36,6 +36,32 @@ def cosine_similarity(emb_a: np.ndarray, emb_b: np.ndarray) -> float:
     return float(np.dot(emb_a, emb_b) / (norm_a * norm_b))
 
 
+def weighted_average_embeddings(
+    vectors: list[np.ndarray],
+    *,
+    weights: list[float] | None = None,
+) -> np.ndarray:
+    """Average embeddings and keep the result on the unit hypersphere."""
+    if not vectors:
+        raise ValueError("At least one embedding vector is required")
+    if len(vectors) == 1:
+        return vectors[0]
+
+    if weights is None:
+        mean = np.mean(vectors, axis=0)
+    else:
+        sanitized = np.array([max(float(weight), 0.0) for weight in weights], dtype=np.float32)
+        if float(np.sum(sanitized)) <= 0:
+            mean = np.mean(vectors, axis=0)
+        else:
+            mean = np.average(vectors, axis=0, weights=sanitized)
+
+    norm = np.linalg.norm(mean)
+    if norm > 0:
+        mean = mean / norm
+    return mean
+
+
 def embed_segments(
     embedder: "BaseEmbedder",
     segments: list[np.ndarray],
@@ -52,11 +78,7 @@ def embed_segments(
         return embedder.embed(segments[0], sample_rate)
 
     vectors = [embedder.embed(seg, sample_rate) for seg in segments]
-    mean = np.mean(vectors, axis=0)
-    norm = np.linalg.norm(mean)
-    if norm > 0:
-        mean = mean / norm
-    return mean
+    return weighted_average_embeddings(vectors)
 
 
 # ── SpeechBrain ECAPA-TDNN ────────────────────────────────────────────────
