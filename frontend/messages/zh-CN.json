@@ -215,7 +215,7 @@
     "asset_status_succeeded": "完成",
     "reembed": "重新计算全部音频",
     "reembed_running": "重新计算中…",
-    "reembed_success": "已加入重新处理队列：{created} 条音频已排队，跳过 {skipped} 条音频，删除 {deleted} 条旧向量，错误 {errors} 条。",
+    "reembed_success": "重新计算完成：新增 {created} 条向量，跳过 {skipped} 条音频，删除 {deleted} 条旧向量，错误 {errors} 条。",
     "housekeep": "资料对账",
     "housekeep_running": "对账中…",
     "housekeep_success": "对账完成：删除 {assets} 条资料、{objects} 个 MinIO 对象、{embeddings} 条声纹向量。",

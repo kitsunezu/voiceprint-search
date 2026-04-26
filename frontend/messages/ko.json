@@ -215,7 +215,7 @@
     "asset_status_succeeded": "완료",
     "reembed": "전체 오디오 재계산",
     "reembed_running": "재계산 중…",
-    "reembed_success": "재처리 대기열에 추가됨: 오디오 {created}건 큐 등록, {skipped}건 건너뜀, 기존 벡터 {deleted}건 삭제, 오류 {errors}건.",
+    "reembed_success": "재계산 완료: 벡터 {created}건 생성, 오디오 {skipped}건 건너뜀, 기존 벡터 {deleted}건 삭제, 오류 {errors}건.",
     "housekeep": "데이터 정리",
     "housekeep_running": "정리 중…",
     "housekeep_success": "정리 완료: DB {assets}건, MinIO {objects}건, 벡터 {embeddings}건을 삭제했습니다.",

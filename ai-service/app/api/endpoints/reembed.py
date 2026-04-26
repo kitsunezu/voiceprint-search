@@ -1,48 +1,46 @@
-"""Queue background reprocessing for existing audio assets.
+"""Rebuild existing audio assets for all currently loaded models.
 
 POST /api/v1/reembed
 
-Deletes existing embeddings when overwrite mode is enabled, marks assets as
-pending again, and re-queues the normal background audio processing worker for
-each stored asset.
+Iterates every AudioAsset row, downloads the original file from MinIO,
+runs the long-form reference profile builder + each loaded embedder, and
+recreates the Embedding rows for that asset when overwrite mode is enabled.
 """
 
 import logging
+import os
+import shutil
+import tempfile
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
-from app.db import repository as repo
+from app.api.deps import get_db, get_embedder_registry, get_minio, get_preprocessor
+from app.config import settings
+from app.core.embedder import EmbedderRegistry
+from app.core.preprocessing import AudioPreprocessor
+from app.core.reference_profiles import build_reference_profile, persist_reference_embeddings
 from app.db.models import AudioAsset, Embedding
+from minio import Minio
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _enqueue_background_asset_processing(asset_id: int) -> bool:
-    try:
-        from app.worker.tasks import process_audio_asset_embeddings
-
-        process_audio_asset_embeddings.send(int(asset_id))
-        return True
-    except Exception:
-        logger.exception("Failed to enqueue background processing for audio asset %d", asset_id)
-        return False
-
-
 @router.post("/reembed")
 async def reembed_all(
     db: AsyncSession = Depends(get_db),
+    registry: EmbedderRegistry = Depends(get_embedder_registry),
+    minio_client: Minio = Depends(get_minio),
+    preprocessor: AudioPreprocessor = Depends(get_preprocessor),
     overwrite: bool = True,
 ):
-    """Queue background audio reprocessing for every enrolled audio asset."""
+    """Rebuild embeddings for every enrolled audio asset using windowed references."""
     counts = {"created": 0, "skipped": 0, "deleted": 0, "errors": 0}
 
     stmt = select(AudioAsset).where(AudioAsset.speaker_id.isnot(None))
     assets = list((await db.execute(stmt)).scalars().all())
-    queued_asset_ids: list[int] = []
 
     for asset in assets:
         existing_stmt = select(Embedding.id).where(Embedding.audio_asset_id == asset.id)
@@ -51,32 +49,51 @@ async def reembed_all(
             counts["skipped"] += 1
             continue
 
-        if overwrite and existing_ids:
-            counts["deleted"] += await repo.delete_embeddings_for_audio_asset(db, asset_id=int(asset.id))
+        tmp_dir = tempfile.mkdtemp()
+        cleanup_dirs: list[str] = []
+        try:
+            tmp_path = os.path.join(tmp_dir, "audio.orig")
+            minio_client.fget_object(settings.minio_bucket, asset.storage_key, tmp_path)
 
-        asset.processing_status = "pending"
-        asset.processing_error = None
-        asset.processing_started_at = None
-        asset.processing_finished_at = None
-        queued_asset_ids.append(int(asset.id))
+            profile_windows, pp_dirs, asset_duration_seconds = build_reference_profile(
+                tmp_path,
+                preprocessor=preprocessor,
+                cfg=settings,
+            )
+            if not profile_windows:
+                logger.warning("reembed: asset=%d — no usable speech, skipping", asset.id)
+                counts["errors"] += 1
+                continue
+            cleanup_dirs.extend(pp_dirs)
+            if asset_duration_seconds is not None:
+                asset.duration_seconds = float(asset_duration_seconds)
+
+            result = await persist_reference_embeddings(
+                db,
+                asset_id=asset.id,
+                speaker_id=asset.speaker_id,
+                available_models=registry.available_ids,
+                registry=registry,
+                profile_windows=profile_windows,
+                overwrite=overwrite,
+            )
+            counts["created"] += int(result["created"])
+            counts["errors"] += len(result["failures"])
+            if overwrite:
+                counts["deleted"] += len(existing_ids)
+            if result["created"]:
+                logger.info("reembed: asset=%d rebuilt %d embeddings", asset.id, int(result["created"]))
+            else:
+                counts["skipped"] += 1
+
+        except Exception:
+            await db.rollback()
+            logger.exception("reembed: failed to process asset %d", asset.id)
+            counts["errors"] += 1
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            for d in cleanup_dirs:
+                shutil.rmtree(d, ignore_errors=True)
 
     await db.commit()
-
-    failed_asset_ids: list[int] = []
-    for asset_id in queued_asset_ids:
-        if _enqueue_background_asset_processing(asset_id):
-            counts["created"] += 1
-        else:
-            counts["errors"] += 1
-            failed_asset_ids.append(asset_id)
-
-    if failed_asset_ids:
-        for asset_id in failed_asset_ids:
-            asset = await db.get(AudioAsset, asset_id)
-            if asset is None:
-                continue
-            asset.processing_status = "failed"
-            asset.processing_error = "Background processing was not queued."
-        await db.commit()
-
     return counts
