@@ -233,7 +233,7 @@
     "asset_status_succeeded": "Done",
     "reembed": "Recompute All Audio",
     "reembed_running": "Recomputing...",
-    "reembed_success": "Recompute complete: created {created} vectors, skipped {skipped} assets, deleted {deleted} old vectors, errors {errors}.",
+    "reembed_success": "Recompute queued: {created} assets queued, skipped {skipped} assets, deleted {deleted} old vectors, errors {errors}.",
     "housekeep": "Housekeep",
     "housekeep_running": "Housekeeping...",
     "housekeep_success": "Housekeeping complete: removed {assets} DB rows, {objects} MinIO objects, and {embeddings} vectors.",

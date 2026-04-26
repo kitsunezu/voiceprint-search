@@ -233,7 +233,7 @@
     "asset_status_succeeded": "完了",
     "reembed": "全音声を再計算",
     "reembed_running": "再計算中…",
-    "reembed_success": "再計算完了: ベクトル {created} 件を作成、音声 {skipped} 件をスキップ、旧ベクトル {deleted} 件を削除、エラー {errors} 件。",
+    "reembed_success": "再処理をキューに追加しました: 音声 {created} 件をキュー投入、{skipped} 件をスキップ、旧ベクトル {deleted} 件を削除、エラー {errors} 件。",
     "housekeep": "整合性チェック",
     "housekeep_running": "整合性チェック中…",
     "housekeep_success": "整合性チェック完了：DB {assets} 件、MinIO {objects} 件、ベクトル {embeddings} 件を削除しました。",
