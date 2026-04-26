@@ -87,6 +87,7 @@ async def reembed_all(
                 counts["skipped"] += 1
 
         except Exception:
+            await db.rollback()
             logger.exception("reembed: failed to process asset %d", asset.id)
             counts["errors"] += 1
         finally:

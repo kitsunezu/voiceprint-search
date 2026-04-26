@@ -10,6 +10,18 @@ type ProxyResult = {
   body: string;
 };
 
+function parseProxyBody(body: string): Record<string, unknown> {
+  if (!body.trim()) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(body) as Record<string, unknown>;
+  } catch {
+    return { detail: body };
+  }
+}
+
 function proxyLongRunningPost(url: string, headers: Headers): Promise<ProxyResult> {
   return new Promise((resolve, reject) => {
     const target = new URL(url);
@@ -52,7 +64,7 @@ export async function POST(request: NextRequest) {
       aiUrl(`/api/v1/reembed${query}`),
       buildAiProxyHeaders(request),
     );
-    const data = JSON.parse(res.body || "{}") as Record<string, unknown>;
+    const data = parseProxyBody(res.body);
     return NextResponse.json(data, { status: res.status });
   } catch {
     return NextResponse.json({ detail: "AI service unavailable" }, { status: 502 });
