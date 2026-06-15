@@ -132,11 +132,29 @@ jobs:
             exit 1
           fi
 
-          curl --fail-with-body --silent --show-error \
+          response_file="$(mktemp)"
+          http_code="$(curl --silent --show-error \
+            --output "$response_file" \
+            --write-out "%{http_code}" \
             --request PUT \
             --header "CF-Access-Client-ID: $CF_ACCESS_CLIENT_ID" \
             --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
             --header "X-API-Key: $PORTAINER_API_KEY" \
             --header "Content-Type: application/json" \
             --data '{"RepullImageAndRedeploy":true}' \
-            "$PORTAINER_BASE_URL/api/stacks/$PORTAINER_STACK_ID/git/redeploy?endpointId=$PORTAINER_ENDPOINT_ID"
+            "$PORTAINER_BASE_URL/api/stacks/$PORTAINER_STACK_ID/git/redeploy?endpointId=$PORTAINER_ENDPOINT_ID")"
+
+          if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
+            cat "$response_file"
+            exit 0
+          fi
+
+          if [ "$http_code" = "504" ]; then
+            echo "::warning::Portainer redeploy timed out through Cloudflare after the request was accepted. Check the stack update time in Portainer if confirmation is needed."
+            cat "$response_file"
+            exit 0
+          fi
+
+          cat "$response_file"
+          echo "::error::Portainer redeploy failed with HTTP $http_code"
+          exit 1
