@@ -115,7 +115,6 @@ export default function SearchPage() {
             >
               <ResultCard
                 score={m.score}
-                probability={m.probability}
                 speakerName={m.speaker_name}
                 rank={m.rank}
               />

@@ -111,7 +111,7 @@ def process_verify_job(payload: dict):
     use_denoise = bool(payload.get("denoise", settings.preprocess_denoise))
     include_timings = bool(payload.get("include_timings", False))
     enable_fast_return = bool(payload.get("enable_fast_return", False))
-    fast_return_margin = float(payload.get("fast_return_margin", 0.18))
+    fast_return_margin = float(payload.get("fast_return_margin", 0.0))
 
     tmp_dir = tempfile.mkdtemp(prefix=f"verify-job-{job_id[:8]}-")
     try:
@@ -136,8 +136,7 @@ def process_verify_job(payload: dict):
 
         embedder = runtime.registry.get(model_id)
         calibrator = runtime.calibrators.get(model_id)
-        model_cfg = settings.get_model(model_id)
-        threshold = model_cfg.verify_threshold if model_cfg else settings.verify_threshold
+        different_threshold, threshold = settings.get_verify_thresholds(model_id)
 
         def _progress_callback(stage: str, progress: int) -> None:
             update_verify_job_progress(
@@ -162,6 +161,7 @@ def process_verify_job(payload: dict):
                 speaker_id=speaker_id,
                 model_id=model_id,
                 threshold=threshold,
+                different_threshold=different_threshold,
                 separate_vocals=use_separation,
                 denoise=use_denoise,
                 include_timings=include_timings,

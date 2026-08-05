@@ -1,4 +1,9 @@
-"""Score calibration — convert cosine similarity to probability."""
+"""Optional score calibration for cosine similarity.
+
+The bundled coefficients are compatibility defaults, not calibration evidence
+for this deployment's singing-voice domain. Call :meth:`fit` on a labelled,
+representative validation set before presenting the output as a probability.
+"""
 
 from __future__ import annotations
 
@@ -18,6 +23,7 @@ class ScoreCalibrator:
     def __init__(self, weight: float = 10.0, bias: float = -3.5):
         self.weight = weight
         self.bias = bias
+        self.is_fitted = False
 
     def calibrate(self, score: float) -> float:
         """Map a cosine similarity in [-1, 1] to a probability in [0, 1]."""
@@ -35,6 +41,7 @@ class ScoreCalibrator:
         lr.fit(scores.reshape(-1, 1), labels.astype(int))
         self.weight = float(lr.coef_[0][0])
         self.bias = float(lr.intercept_[0])
+        self.is_fitted = True
 
 
 class CalibratorRegistry:

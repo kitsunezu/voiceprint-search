@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
-import logging
 import os
 
 import numpy as np
@@ -18,9 +18,6 @@ from app.db import repository as repo
 from app.db.models import Embedding
 
 
-logger = logging.getLogger(__name__)
-
-
 @dataclass
 class ReferenceProfileWindow:
     index: int
@@ -29,6 +26,17 @@ class ReferenceProfileWindow:
     speech_seconds: float
     weight: float
     segments: list[np.ndarray]
+
+
+@dataclass(frozen=True)
+class ReferenceProfileComparison:
+    """Robust comparison of two multi-asset reference profiles."""
+
+    score: float
+    coverage_score: float
+    centroid_score: float
+    asset_count_a: int
+    asset_count_b: int
 
 
 def compute_profile_weight(speech_seconds: float, *, power: float) -> float:
@@ -54,20 +62,17 @@ def build_reference_profile(
     except Exception:
         total_duration = None
 
+    # Only separate the whole source when it fits in one profile window.  Long
+    # assets are sampled first and each short representative window is then
+    # separated.  This keeps long and short enrollments in the same data domain
+    # without running Demucs across an entire multi-hour stream.
     should_use_shared_separation = cfg.preprocess_separate_vocals and (
-        total_duration is None or total_duration <= float(cfg.separator_max_seconds)
+        total_duration is None or total_duration <= float(cfg.profile_window_seconds)
     )
 
     if should_use_shared_separation:
         shared_source_path, sep_dir = preprocessor.separator.separate(raw_audio_path, max_duration_seconds=None)
         shared_cleanup_dirs.append(sep_dir)
-    elif cfg.preprocess_separate_vocals:
-        logger.info(
-            "Skipping vocal separation for long reference asset duration=%.1fs (limit=%ss)",
-            float(total_duration),
-            int(cfg.separator_max_seconds),
-        )
-
     planned = plan_profile_windows(
         total_duration,
         window_seconds=cfg.profile_window_seconds,
@@ -93,7 +98,10 @@ def build_reference_profile(
             )
 
         try:
-            result, pp_dirs = preprocessor.process(window_path, separate_vocals=False)
+            result, pp_dirs = preprocessor.process(
+                window_path,
+                separate_vocals=cfg.preprocess_separate_vocals and not should_use_shared_separation,
+            )
         except PreprocessError:
             if not use_shared_source:
                 try:
@@ -180,3 +188,60 @@ def weighted_reference_embedding(rows: list[Embedding]) -> np.ndarray:
     vectors = [np.array(row.vector) for row in rows]
     weights = [float(row.weight or 1.0) for row in rows]
     return weighted_average_embeddings(vectors, weights=weights)
+
+
+def _asset_reference_embeddings(rows: list[Embedding]) -> list[np.ndarray]:
+    """Collapse multiple windows from one asset into one equal-weight prototype."""
+    grouped: dict[object, list[Embedding]] = defaultdict(list)
+    for index, row in enumerate(rows):
+        asset_id = getattr(row, "audio_asset_id", None)
+        row_id = getattr(row, "id", index)
+        grouped[("asset", asset_id) if asset_id is not None else ("row", row_id)].append(row)
+
+    prototypes: list[np.ndarray] = []
+    for asset_rows in grouped.values():
+        prototypes.append(weighted_reference_embedding(asset_rows))
+    return prototypes
+
+
+def compare_reference_profiles(
+    rows_a: list[Embedding],
+    rows_b: list[Embedding],
+) -> ReferenceProfileComparison:
+    """Compare profiles by bidirectional asset coverage instead of one centroid.
+
+    Each audio asset contributes one prototype regardless of how many windows
+    it produced.  The score is the mean of each side's best cross-profile
+    asset match, which is more robust to mixed speaking/singing material than
+    collapsing every window into a single centroid.
+    """
+    assets_a = _asset_reference_embeddings(rows_a)
+    assets_b = _asset_reference_embeddings(rows_b)
+    if not assets_a or not assets_b:
+        raise ValueError("Both reference profiles must contain embeddings")
+
+    normalized_a = np.stack(
+        [vector / (np.linalg.norm(vector) or 1.0) for vector in assets_a],
+    )
+    normalized_b = np.stack(
+        [vector / (np.linalg.norm(vector) or 1.0) for vector in assets_b],
+    )
+    cross_scores = normalized_a @ normalized_b.T
+    coverage_score = float(
+        (np.mean(np.max(cross_scores, axis=1)) + np.mean(np.max(cross_scores, axis=0)))
+        / 2.0
+    )
+
+    centroid_a = weighted_average_embeddings(assets_a)
+    centroid_b = weighted_average_embeddings(assets_b)
+    centroid_score = float(
+        np.dot(centroid_a, centroid_b)
+        / ((np.linalg.norm(centroid_a) or 1.0) * (np.linalg.norm(centroid_b) or 1.0))
+    )
+    return ReferenceProfileComparison(
+        score=coverage_score,
+        coverage_score=coverage_score,
+        centroid_score=centroid_score,
+        asset_count_a=len(assets_a),
+        asset_count_b=len(assets_b),
+    )

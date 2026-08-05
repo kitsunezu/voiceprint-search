@@ -1,137 +1,118 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
+type VerificationDecision = "same" | "different" | "inconclusive";
+
 interface Props {
   score: number;
-  probability: number;
-  isSameSpeaker?: boolean;
+  decision?: VerificationDecision;
+  isSameSpeaker?: boolean | null;
+  sameThreshold?: number;
+  differentThreshold?: number;
   speakerName?: string;
   rank?: number;
 }
 
-const R = 38;
-const CIRC = 2 * Math.PI * R;
+function scorePosition(score: number) {
+  return Math.min(100, Math.max(0, ((score + 1) / 2) * 100));
+}
 
 export function ResultCard({
   score,
-  probability,
+  decision,
   isSameSpeaker,
+  sameThreshold,
+  differentThreshold,
   speakerName,
   rank,
 }: Props) {
   const t = useTranslations("result");
-  const pct = probability * 100;
+  const resolvedDecision =
+    decision ??
+    (isSameSpeaker == null ? undefined : isSameSpeaker ? "same" : "different");
+  const position = scorePosition(score);
+  const hasDecisionBand = sameThreshold != null && differentThreshold != null;
 
-  // Trigger transition after mount so CSS animations actually play
-  const [ready, setReady] = useState(false);
-  useEffect(() => {
-    const id = setTimeout(() => setReady(true), 60);
-    return () => clearTimeout(id);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  const strokeClass =
-    probability >= 0.8
-      ? "stroke-success"
-      : probability >= 0.5
-      ? "stroke-primary"
-      : "stroke-destructive";
-
-  const barClass =
-    probability >= 0.8
-      ? "bg-success"
-      : probability >= 0.5
-      ? "bg-primary"
-      : "bg-destructive";
-
-  const textClass =
-    probability >= 0.8
+  const accentClass =
+    resolvedDecision === "same"
       ? "text-success"
-      : probability >= 0.5
-      ? "text-primary"
-      : "text-destructive";
+      : resolvedDecision === "different"
+        ? "text-destructive"
+        : resolvedDecision === "inconclusive"
+          ? "text-amber-500"
+          : "text-primary";
 
-  const gaugeOffset = ready ? CIRC - (pct / 100) * CIRC : CIRC;
+  const dotClass =
+    resolvedDecision === "same"
+      ? "bg-success"
+      : resolvedDecision === "different"
+        ? "bg-destructive"
+        : resolvedDecision === "inconclusive"
+          ? "bg-amber-500"
+          : "bg-primary";
 
   return (
     <Card>
-      <CardContent className="pt-5">
-        <div className="flex items-center gap-4">
-          {/* ── Circular gauge ───────────────────────── */}
-          <div className="relative h-24 w-24 shrink-0">
-            <svg className="-rotate-90 h-full w-full" viewBox="0 0 96 96">
-              {/* Track */}
-              <circle
-                cx="48"
-                cy="48"
-                r={R}
-                fill="none"
-                strokeWidth="8"
-                className="stroke-muted/25"
-              />
-              {/* Fill arc */}
-              <circle
-                cx="48"
-                cy="48"
-                r={R}
-                fill="none"
-                strokeWidth="8"
-                strokeLinecap="round"
-                strokeDasharray={CIRC}
-                style={{
-                  strokeDashoffset: gaugeOffset,
-                  transition: "stroke-dashoffset 0.75s cubic-bezier(0.34,1.2,0.64,1)",
-                }}
-                className={strokeClass}
-              />
-            </svg>
-            {/* Percentage label (centred, un-rotated) */}
-            <div className="absolute inset-0 flex items-center justify-center">
-              <span className={cn("text-lg font-bold tabular-nums leading-none", textClass)}>
-                {pct.toFixed(0)}%
-              </span>
-            </div>
-          </div>
-
-          {/* ── Right side ───────────────────────────── */}
-          <div className="flex-1 min-w-0 space-y-2">
-            <div className="flex items-center gap-2 flex-wrap">
+      <CardContent className="space-y-4 pt-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
               {rank != null && <Badge variant="secondary">#{rank}</Badge>}
-              {speakerName && (
-                <p className="font-semibold text-base truncate">{speakerName}</p>
-              )}
+              {speakerName && <p className="truncate font-semibold">{speakerName}</p>}
             </div>
-
-            {/* Horizontal fill bar */}
-            <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className={cn("h-full rounded-full transition-[width] duration-700 ease-out", barClass)}
-                style={{ width: ready ? `${pct.toFixed(1)}%` : "0%" }}
-              />
-            </div>
-
-            <div className="flex gap-3 text-xs text-muted-foreground flex-wrap">
-              <span>
-                {t("cosine")}:{" "}
-                <strong className="text-foreground">{score.toFixed(4)}</strong>
-              </span>
-              {isSameSpeaker != null && (
-                <span
-                  className={cn(
-                    "font-medium",
-                    isSameSpeaker ? "text-success" : "text-destructive",
-                  )}
-                >
-                  ● {isSameSpeaker ? t("same_speaker") : t("different_speaker")}
-                </span>
-              )}
-            </div>
+            <p className={cn("mt-1 text-3xl font-bold tabular-nums", accentClass)}>
+              {score.toFixed(4)}
+            </p>
+            <p className="text-xs text-muted-foreground">{t("cosine")}</p>
           </div>
+
+          {resolvedDecision && (
+            <Badge variant="secondary" className={cn("shrink-0", accentClass)}>
+              {t(`decision_${resolvedDecision}`)}
+            </Badge>
+          )}
         </div>
+
+        <div className="space-y-2">
+          <div className="relative h-2 rounded-full bg-muted">
+            {hasDecisionBand && (
+              <>
+                <span
+                  className="absolute inset-y-0 w-px bg-border"
+                  style={{ left: `${scorePosition(differentThreshold)}%` }}
+                />
+                <span
+                  className="absolute inset-y-0 w-px bg-border"
+                  style={{ left: `${scorePosition(sameThreshold)}%` }}
+                />
+              </>
+            )}
+            <span
+              className={cn(
+                "absolute top-1/2 size-3 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-background",
+                dotClass,
+              )}
+              style={{ left: `${position}%` }}
+            />
+          </div>
+
+          {hasDecisionBand && (
+            <p className="text-xs text-muted-foreground">
+              {t("decision_rule", {
+                different: differentThreshold.toFixed(2),
+                same: sameThreshold.toFixed(2),
+              })}
+            </p>
+          )}
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          {resolvedDecision ? t("cosine_explanation") : t("search_score_note")}
+        </p>
       </CardContent>
     </Card>
   );

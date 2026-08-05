@@ -14,7 +14,8 @@ class ModelConfig(BaseModel):
     cache_dir: str                  # where weights are cached inside the container
     calibration_weight: float = 10.0
     calibration_bias: float = -3.5
-    verify_threshold: float = 0.60
+    verify_threshold: float = 0.90
+    verify_different_threshold: float = 0.35
     enabled: bool = True
     hf_token_env: str | None = None  # env var name for gated models (e.g. pyannote)
 
@@ -39,7 +40,8 @@ ECAPA_MODEL = ModelConfig(
     cache_dir="/models/ecapa-tdnn",
     calibration_weight=10.0,
     calibration_bias=-3.5,
-    verify_threshold=0.60,
+    verify_threshold=0.90,
+    verify_different_threshold=0.35,
 )
 
 RESEMBLYZER_MODEL = ModelConfig(
@@ -52,6 +54,7 @@ RESEMBLYZER_MODEL = ModelConfig(
     calibration_weight=8.0,
     calibration_bias=-2.8,
     verify_threshold=0.70,
+    verify_different_threshold=0.40,
     enabled=False,
 )
 
@@ -65,6 +68,7 @@ PYANNOTE_MODEL = ModelConfig(
     calibration_weight=6.0,
     calibration_bias=-2.0,
     verify_threshold=0.50,
+    verify_different_threshold=0.30,
     hf_token_env="HF_TOKEN",
 )
 
@@ -119,7 +123,13 @@ class Settings(BaseSettings):
     # Score calibration defaults (pre-tuned on VoxCeleb)
     calibration_weight: float = 10.0
     calibration_bias: float = -3.5
-    verify_threshold: float = 0.60
+    # Verification uses a three-way decision.  Scores below the lower bound
+    # are different, scores at/above the upper bound are same, and the band in
+    # between is explicitly inconclusive.
+    verify_threshold: float = 0.90
+    verify_different_threshold: float = 0.35
+    profile_verify_threshold: float = 0.75
+    profile_verify_different_threshold: float = 0.50
 
     # Default model used when caller does not specify one
     default_model: str = "ecapa-tdnn-v1"
@@ -131,15 +141,16 @@ class Settings(BaseSettings):
     # All enroll / verify / search requests go through this mandatory pipeline.
     preprocess_separate_vocals: bool = True   # always run Demucs vocal separation
     preprocess_denoise: bool = True           # always run CPU-first noise reduction
-    preprocess_normalize_max_seconds: int = 240  # max post-separation audio window decoded before downstream steps
+    preprocess_normalize_max_seconds: int = 90  # max post-separation audio window decoded before downstream steps
     preprocess_min_speech_seconds: float = 3.0   # minimum usable speech after VAD
-    preprocess_max_speech_seconds: float = 180.0  # max speech fed to embedder
+    preprocess_max_speech_seconds: float = 60.0  # max speech considered before segment sampling
     preprocess_segment_length_seconds: float = 6.0  # fixed-length window for long speech
     preprocess_segment_step_seconds: float = 3.0    # hop between windows (overlap = seg-step)
+    preprocess_max_segments: int = 12              # evenly sampled cap fed to the embedder
     preprocess_short_repeat: bool = True      # repeat-pad speech shorter than min to reach min
     preprocess_reject_no_speech: bool = True  # raise error when no speech detected at all
-    profile_window_seconds: int = 240         # full-fidelity reference window length for long enroll assets
-    profile_max_windows: int = 6              # max retained reference windows per audio asset
+    profile_window_seconds: int = 30          # representative reference window length for enroll assets
+    profile_max_windows: int = 4              # max retained reference windows per audio asset
     profile_skip_intro_ratio: float = 0.10    # skip common intro/jingle portion before planning windows
     profile_weight_power: float = 1.0         # weight curve applied to VAD speech seconds per window
 
@@ -194,6 +205,13 @@ class Settings(BaseSettings):
             if m.id == model_id:
                 return m
         return None
+
+    def get_verify_thresholds(self, model_id: str) -> tuple[float, float]:
+        """Return ``(different, same)`` thresholds for an audio comparison."""
+        model = self.get_model(model_id)
+        if model is not None and model_id != self.default_model:
+            return model.verify_different_threshold, model.verify_threshold
+        return self.verify_different_threshold, self.verify_threshold
 
     @property
     def max_concurrent_background_audio_jobs(self) -> int:

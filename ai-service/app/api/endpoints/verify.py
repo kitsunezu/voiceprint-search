@@ -21,9 +21,10 @@ from app.api.deps import (
 from app.config import settings
 from app.core.audio import validate_extension
 from app.core.calibration import CalibratorRegistry
+from app.core.decision import classify_similarity
 from app.core.embedder import EmbedderRegistry
 from app.core.preprocessing import AudioPreprocessor
-from app.core.reference_profiles import weighted_reference_embedding
+from app.core.reference_profiles import compare_reference_profiles
 from app.core.verify_jobs import (
     create_verify_job,
     fail_verify_job,
@@ -43,17 +44,16 @@ class EnrolledSpeakerVerifyRequest(BaseModel):
     model: str = ""
 
 
-def _resolve_model_and_threshold(
+def _resolve_model_and_thresholds(
     registry: EmbedderRegistry,
     model: str,
-) -> tuple[str, float]:
+) -> tuple[str, float, float]:
     model_id = model.strip() or settings.default_model
     if model_id not in registry.available_ids:
         raise HTTPException(400, f"Unknown or disabled model: {model_id}")
 
-    model_cfg = settings.get_model(model_id)
-    threshold = model_cfg.verify_threshold if model_cfg else settings.verify_threshold
-    return model_id, threshold
+    different_threshold, same_threshold = settings.get_verify_thresholds(model_id)
+    return model_id, different_threshold, same_threshold
 
 
 def _validate_upload(file: UploadFile | None) -> None:
@@ -73,8 +73,7 @@ async def verify_enrolled_speakers(
         raise HTTPException(400, "Select two different enrolled speakers")
 
     started = time.perf_counter()
-    model_id, threshold = _resolve_model_and_threshold(registry, request.model)
-    embedder = registry.get(model_id)
+    model_id, _, _ = _resolve_model_and_thresholds(registry, request.model)
     calibrator = calibrators.get(model_id)
 
     async def load_exact_model_embedding(speaker_id: int):
@@ -87,24 +86,45 @@ async def verify_enrolled_speakers(
                 422,
                 f"Speaker {speaker_id} has no embeddings for model {model_id}",
             )
-        return weighted_reference_embedding(matching)
+        return matching
 
-    embedding_a = await load_exact_model_embedding(request.speaker_a_id)
-    embedding_b = await load_exact_model_embedding(request.speaker_b_id)
-    score = embedder.similarity(embedding_a, embedding_b)
+    profile_a = await load_exact_model_embedding(request.speaker_a_id)
+    profile_b = await load_exact_model_embedding(request.speaker_b_id)
+    comparison = compare_reference_profiles(profile_a, profile_b)
+    score = comparison.score
     probability = calibrator.calibrate(score)
+    different_threshold = settings.profile_verify_different_threshold
+    same_threshold = settings.profile_verify_threshold
+    decision = classify_similarity(
+        score,
+        different_threshold=different_threshold,
+        same_threshold=same_threshold,
+    )
 
     return {
         "score": round(score, 4),
         "probability": round(probability, 4),
-        "is_same_speaker": score >= threshold,
-        "threshold": threshold,
+        "probability_is_calibrated": calibrator.is_fitted,
+        "decision": decision,
+        "is_same_speaker": (
+            True if decision == "same" else False if decision == "different" else None
+        ),
+        "threshold": same_threshold,
+        "same_threshold": same_threshold,
+        "different_threshold": different_threshold,
+        "score_kind": "profile_coverage_cosine",
         "model_used": model_id,
         "strategy": "enrolled-profiles",
         "elapsed_seconds": round(time.perf_counter() - started, 4),
         "preprocess_options": {"separate_vocals": False, "denoise": False},
         "speaker_a_id": request.speaker_a_id,
         "speaker_b_id": request.speaker_b_id,
+        "profile_scores": {
+            "coverage": round(comparison.coverage_score, 4),
+            "centroid": round(comparison.centroid_score, 4),
+            "asset_count_a": comparison.asset_count_a,
+            "asset_count_b": comparison.asset_count_b,
+        },
     }
 
 
@@ -118,7 +138,7 @@ async def verify(
     denoise: bool | None = Form(None),
     include_timings: bool = Form(False),
     enable_fast_return: bool = Form(False),
-    fast_return_margin: float = Form(0.18),
+    fast_return_margin: float = Form(0.0),
     db: AsyncSession = Depends(get_db),
     registry: EmbedderRegistry = Depends(get_embedder_registry),
     calibrators: CalibratorRegistry = Depends(get_calibrator_registry),
@@ -131,7 +151,7 @@ async def verify(
     _validate_upload(audio_a)
     _validate_upload(audio_b)
 
-    model_id, threshold = _resolve_model_and_threshold(registry, model)
+    model_id, different_threshold, threshold = _resolve_model_and_thresholds(registry, model)
     embedder = registry.get(model_id)
     calibrator = calibrators.get(model_id)
 
@@ -161,6 +181,7 @@ async def verify(
             speaker_id=speaker_id,
             model_id=model_id,
             threshold=threshold,
+            different_threshold=different_threshold,
             separate_vocals=use_separation,
             denoise=use_denoise,
             include_timings=include_timings,
@@ -185,7 +206,7 @@ async def create_verify_job_endpoint(
     denoise: bool | None = Form(None),
     include_timings: bool = Form(False),
     enable_fast_return: bool = Form(False),
-    fast_return_margin: float = Form(0.18),
+    fast_return_margin: float = Form(0.0),
     registry: EmbedderRegistry = Depends(get_embedder_registry),
     minio_client: Minio = Depends(get_minio),
 ):
@@ -196,7 +217,7 @@ async def create_verify_job_endpoint(
     _validate_upload(audio_a)
     _validate_upload(audio_b)
 
-    model_id, _ = _resolve_model_and_threshold(registry, model)
+    model_id, _, _ = _resolve_model_and_thresholds(registry, model)
     use_separation = settings.preprocess_separate_vocals if separate_vocals is None else separate_vocals
     use_denoise = settings.preprocess_denoise if denoise is None else denoise
 

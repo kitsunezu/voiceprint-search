@@ -12,6 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.calibration import ScoreCalibrator
+from app.core.decision import classify_similarity, should_fast_return
 from app.core.embedder import BaseEmbedder, embed_segments
 from app.core.preprocessing import AudioPreprocessor, PreprocessError
 from app.core.reference_profiles import weighted_reference_embedding
@@ -34,7 +35,7 @@ async def load_speaker_reference_embedding(
 
     same_model = [e for e in enrolled if e.model_version == model_id]
     if not same_model:
-        same_model = enrolled
+        raise HTTPException(422, f"Speaker has no embeddings for model {model_id}")
 
     return weighted_reference_embedding(same_model)
 
@@ -46,6 +47,7 @@ async def run_verify_pipeline(
     speaker_id: int | None,
     model_id: str,
     threshold: float,
+    different_threshold: float,
     separate_vocals: bool,
     denoise: bool,
     include_timings: bool,
@@ -75,17 +77,29 @@ async def run_verify_pipeline(
         score: float,
         probability: float,
         strategy: str,
-        preprocess_options: dict[str, bool],
+        preprocess_options: dict[str, bool | None],
         elapsed_seconds: float,
         timings: dict | None = None,
         margin_from_threshold: float | None = None,
         voice_characteristics: dict | None = None,
     ) -> dict:
+        decision = classify_similarity(
+            score,
+            different_threshold=different_threshold,
+            same_threshold=threshold,
+        )
         response = {
             "score": round(score, 4),
             "probability": round(probability, 4),
-            "is_same_speaker": score >= threshold,
+            "probability_is_calibrated": calibrator.is_fitted,
+            "decision": decision,
+            "is_same_speaker": (
+                True if decision == "same" else False if decision == "different" else None
+            ),
             "threshold": threshold,
+            "same_threshold": threshold,
+            "different_threshold": different_threshold,
+            "score_kind": "cosine_similarity",
             "model_used": model_id,
             "strategy": strategy,
             "elapsed_seconds": round(elapsed_seconds, 4),
@@ -139,7 +153,10 @@ async def run_verify_pipeline(
                 report("score", 90)
                 score_quick = embedder.similarity(emb_a_quick, emb_b_quick)
                 probability_quick = calibrator.calibrate(score_quick)
-                margin_from_threshold = abs(score_quick - threshold)
+                margin_from_threshold = min(
+                    abs(score_quick - threshold),
+                    abs(score_quick - different_threshold),
+                )
                 quick_timings["total"] = round(time.perf_counter() - quick_started, 4)
                 quick_timings["request_total"] = round(time.perf_counter() - request_started, 4)
 
@@ -148,13 +165,24 @@ async def run_verify_pipeline(
                     res_b_quick.analysis_waveform,
                 )
 
-                if (not separate_vocals) or margin_from_threshold >= fast_return_margin:
+                if should_fast_return(
+                    score_quick,
+                    different_threshold=different_threshold,
+                    margin=fast_return_margin,
+                    separation_requested=separate_vocals,
+                ):
                     report("done", 100)
                     return build_response(
                         score=score_quick,
                         probability=probability_quick,
                         strategy="fast-profile" if (not separate_vocals) else "fast-return",
-                        preprocess_options={"separate_vocals": False, "denoise": denoise},
+                        preprocess_options={
+                            "separation_requested": separate_vocals,
+                            "separate_vocals": False,
+                            "separation_applied_a": bool(res_a_quick.options.get("separate_vocals")),
+                            "separation_applied_b": bool(res_b_quick.options.get("separate_vocals")),
+                            "denoise": denoise,
+                        },
                         elapsed_seconds=quick_timings["request_total"],
                         timings=quick_timings,
                         margin_from_threshold=margin_from_threshold,
@@ -241,10 +269,23 @@ async def run_verify_pipeline(
             score=score,
             probability=probability,
             strategy="full",
-            preprocess_options={"separate_vocals": separate_vocals, "denoise": denoise},
+            preprocess_options={
+                "separation_requested": separate_vocals,
+                "separate_vocals": bool(res_a.options.get("separate_vocals")) and (
+                    res_b is None or bool(res_b.options.get("separate_vocals"))
+                ),
+                "separation_applied_a": bool(res_a.options.get("separate_vocals")),
+                "separation_applied_b": (
+                    bool(res_b.options.get("separate_vocals")) if res_b is not None else None
+                ),
+                "denoise": denoise,
+            },
             elapsed_seconds=timings["total"],
             timings=timings,
-            margin_from_threshold=abs(score - threshold),
+            margin_from_threshold=min(
+                abs(score - threshold),
+                abs(score - different_threshold),
+            ),
             voice_characteristics=voice_characteristics,
         )
 

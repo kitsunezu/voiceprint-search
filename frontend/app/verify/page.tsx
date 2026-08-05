@@ -202,8 +202,42 @@ export default function VerifyPage() {
       {activeResult && !activeLoading && (
         <div className="space-y-2">
           {mode === "database" && selectedSpeakerA && selectedSpeakerB && <p className="text-sm font-medium">{t("comparison_pair", { speakerA: selectedSpeakerA.name, speakerB: selectedSpeakerB.name })}</p>}
-          <ResultCard score={activeResult.score} probability={activeResult.probability} isSameSpeaker={activeResult.is_same_speaker} />
+          <ResultCard
+            score={activeResult.score}
+            decision={activeResult.decision}
+            isSameSpeaker={activeResult.is_same_speaker}
+            sameThreshold={activeResult.same_threshold ?? activeResult.threshold}
+            differentThreshold={activeResult.different_threshold}
+          />
+          {mode === "database" && activeResult.profile_scores && (
+            <div className="grid gap-2 rounded-md border bg-card p-3 text-sm sm:grid-cols-3">
+              <p>
+                <span className="text-muted-foreground">{t("profile_coverage_score")}: </span>
+                <strong className="tabular-nums">{activeResult.profile_scores.coverage.toFixed(4)}</strong>
+              </p>
+              <p>
+                <span className="text-muted-foreground">{t("profile_centroid_score")}: </span>
+                <strong className="tabular-nums">{activeResult.profile_scores.centroid.toFixed(4)}</strong>
+              </p>
+              <p>
+                <span className="text-muted-foreground">{t("profile_asset_counts")}: </span>
+                <strong className="tabular-nums">
+                  {activeResult.profile_scores.asset_count_a} / {activeResult.profile_scores.asset_count_b}
+                </strong>
+              </p>
+              <p className="text-xs text-muted-foreground sm:col-span-3">
+                {t("profile_score_explanation")}
+              </p>
+            </div>
+          )}
           <ProcessingInsights mode="verify" strategy={activeResult.strategy} elapsedSeconds={activeResult.elapsed_seconds} />
+          {activeResult.strategy === "full" &&
+            activeResult.preprocess_options?.separation_requested &&
+            !activeResult.preprocess_options.separate_vocals && (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-700 dark:text-amber-300">
+                {tPreprocess("separation_failed_warning")}
+              </p>
+            )}
           {mode === "audio" && <VoiceProfileComparison profile={activeResult.voice_characteristics ?? null} />}
           {activeResult.model_used && <p className="text-xs text-muted-foreground">Model: {activeResult.model_used}</p>}
         </div>

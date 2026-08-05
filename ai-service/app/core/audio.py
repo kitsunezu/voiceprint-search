@@ -264,3 +264,19 @@ def segment_waveform(
         segments.append(seg)
         start += step_samples
     return segments
+
+
+def select_evenly_spaced_segments(
+    segments: "list[np.ndarray]",
+    max_segments: int,
+) -> "list[np.ndarray]":
+    """Retain at most *max_segments* while preserving whole-clip coverage."""
+    limit = max(int(max_segments), 1)
+    if len(segments) <= limit:
+        return segments
+    if limit == 1:
+        return [segments[len(segments) // 2]]
+
+    last = len(segments) - 1
+    indices = [round(i * last / (limit - 1)) for i in range(limit)]
+    return [segments[index] for index in indices]

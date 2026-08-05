@@ -96,6 +96,7 @@ async def search(
                 "speaker_name": m["speaker_name"],
                 "score": round(m["score"], 4),
                 "probability": round(prob, 4),
+                "probability_is_calibrated": calibrator.is_fitted,
                 "rank": rank,
                 "best_score": round(m["best_score"], 4) if m.get("best_score") is not None else None,
                 "centroid_score": round(m["centroid_score"], 4) if m.get("centroid_score") is not None else None,

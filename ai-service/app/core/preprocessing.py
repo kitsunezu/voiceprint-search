@@ -22,7 +22,12 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from app.config import Settings
-from app.core.audio import normalize_audio, repeat_pad, segment_waveform
+from app.core.audio import (
+    normalize_audio,
+    repeat_pad,
+    segment_waveform,
+    select_evenly_spaced_segments,
+)
 from app.core.denoise import Denoiser
 from app.core.separator import VocalSeparator
 from app.core.vad import VoiceActivityDetector
@@ -157,6 +162,10 @@ class AudioPreprocessor:
             segments = [speech]
         else:
             segments = segment_waveform(speech, seg_samples, step_samples)
+            segments = select_evenly_spaced_segments(
+                segments,
+                self.cfg.preprocess_max_segments,
+            )
 
         if collect_timings:
             timings["segment"] = round(time.perf_counter() - step_started, 4)

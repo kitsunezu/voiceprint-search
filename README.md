@@ -55,7 +55,17 @@ Enroll a speaker with one or more voice samples. The platform extracts embedding
 
 ### Verification
 
-Compare two audio clips, or compare an uploaded clip with an enrolled speaker, and return a calibrated confidence score.
+Compare two audio clips, or compare an uploaded clip with an enrolled speaker. The API returns the raw cosine score and a conservative three-way decision:
+
+- `different`: score is below the lower threshold
+- `inconclusive`: score is between the lower and upper thresholds
+- `same`: score reaches the upper threshold
+
+Cosine similarity is not a percentage or a probability. The legacy `probability` field remains for API compatibility but is explicitly marked with `probability_is_calibrated: false` and is not shown as a percentage in the UI.
+
+Stored speaker profiles are compared as equal-weight per-asset prototypes using bidirectional coverage. This avoids letting a long recording with many windows dominate a speaker and is more robust than collapsing every recording into one centroid.
+
+After changing the profile-window or preprocessing settings, run **Admin → Recompute All Audio** once so every stored voiceprint is rebuilt with the same pipeline. Do not leave old and newly enrolled embeddings mixed under the same model version.
 
 ### Search
 
@@ -137,6 +147,15 @@ Common variables:
 - NEXT_PUBLIC_SITE_URL: public frontend base URL used for canonical tags, sitemap, manifest, and social metadata
 - OTEL_EXPORTER_OTLP_ENDPOINT: OTEL / SigNoz collector endpoint
 - SEARCH_STRATEGY: best, centroid, or hybrid
+- VERIFY_DIFFERENT_THRESHOLD: lower audio-verification decision boundary, default 0.35
+- VERIFY_THRESHOLD: upper audio-verification decision boundary, default 0.90
+- PROFILE_VERIFY_DIFFERENT_THRESHOLD: lower stored-profile boundary, default 0.50
+- PROFILE_VERIFY_THRESHOLD: upper stored-profile boundary, default 0.75
+- PREPROCESS_NORMALIZE_MAX_SECONDS: maximum query analysis window, default 90
+- PREPROCESS_MAX_SPEECH_SECONDS: maximum detected speech considered, default 60
+- PREPROCESS_MAX_SEGMENTS: evenly sampled ECAPA segment budget, default 12
+- PROFILE_WINDOW_SECONDS: length of each enrollment reference window, default 30
+- PROFILE_MAX_WINDOWS: maximum reference windows per audio asset, default 4
 - SEPARATOR_PROFILE: demucs, mdx, or roformer
 - HF_TOKEN: optional Hugging Face token for gated models
 

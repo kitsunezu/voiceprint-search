@@ -16,6 +16,7 @@ export interface SearchMatch {
   speaker_name: string;
   score: number;
   probability: number;
+  probability_is_calibrated?: boolean;
   rank: number;
 }
 
@@ -44,12 +45,30 @@ interface VoiceCharacteristics {
 export interface VerifyResult {
   score: number;
   probability: number;
-  is_same_speaker: boolean;
+  probability_is_calibrated?: boolean;
+  decision?: "same" | "different" | "inconclusive";
+  is_same_speaker: boolean | null;
   threshold: number;
+  same_threshold?: number;
+  different_threshold?: number;
+  score_kind?: string;
   elapsed_seconds?: number;
   model_used?: string;
   strategy?: string;
+  preprocess_options?: {
+    separation_requested?: boolean;
+    separate_vocals?: boolean;
+    separation_applied_a?: boolean;
+    separation_applied_b?: boolean | null;
+    denoise?: boolean;
+  };
   voice_characteristics?: VoiceCharacteristics;
+  profile_scores?: {
+    coverage: number;
+    centroid: number;
+    asset_count_a: number;
+    asset_count_b: number;
+  };
 }
 
 export interface VerifyJobState {
