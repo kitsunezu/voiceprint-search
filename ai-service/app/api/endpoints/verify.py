@@ -3,10 +3,12 @@
 import os
 import shutil
 import tempfile
+import time
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from minio import Minio
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -21,6 +23,7 @@ from app.core.audio import validate_extension
 from app.core.calibration import CalibratorRegistry
 from app.core.embedder import EmbedderRegistry
 from app.core.preprocessing import AudioPreprocessor
+from app.core.reference_profiles import weighted_reference_embedding
 from app.core.verify_jobs import (
     create_verify_job,
     fail_verify_job,
@@ -28,9 +31,16 @@ from app.core.verify_jobs import (
     get_verify_job,
 )
 from app.core.verify_service import load_speaker_reference_embedding, run_verify_pipeline
+from app.db import repository as repo
 from app.storage.minio_client import upload_file
 
 router = APIRouter()
+
+
+class EnrolledSpeakerVerifyRequest(BaseModel):
+    speaker_a_id: int
+    speaker_b_id: int
+    model: str = ""
 
 
 def _resolve_model_and_threshold(
@@ -49,6 +59,53 @@ def _resolve_model_and_threshold(
 def _validate_upload(file: UploadFile | None) -> None:
     if file and (not file.filename or not validate_extension(file.filename)):
         raise HTTPException(400, "Unsupported audio format")
+
+
+@router.post("/verify/speakers")
+async def verify_enrolled_speakers(
+    request: EnrolledSpeakerVerifyRequest,
+    db: AsyncSession = Depends(get_db),
+    registry: EmbedderRegistry = Depends(get_embedder_registry),
+    calibrators: CalibratorRegistry = Depends(get_calibrator_registry),
+):
+    """Compare two enrolled speaker reference profiles without audio uploads."""
+    if request.speaker_a_id == request.speaker_b_id:
+        raise HTTPException(400, "Select two different enrolled speakers")
+
+    started = time.perf_counter()
+    model_id, threshold = _resolve_model_and_threshold(registry, request.model)
+    embedder = registry.get(model_id)
+    calibrator = calibrators.get(model_id)
+
+    async def load_exact_model_embedding(speaker_id: int):
+        enrolled = await repo.get_speaker_embeddings(db, speaker_id)
+        if not enrolled:
+            raise HTTPException(404, f"Speaker {speaker_id} has no embeddings")
+        matching = [row for row in enrolled if row.model_version == model_id]
+        if not matching:
+            raise HTTPException(
+                422,
+                f"Speaker {speaker_id} has no embeddings for model {model_id}",
+            )
+        return weighted_reference_embedding(matching)
+
+    embedding_a = await load_exact_model_embedding(request.speaker_a_id)
+    embedding_b = await load_exact_model_embedding(request.speaker_b_id)
+    score = embedder.similarity(embedding_a, embedding_b)
+    probability = calibrator.calibrate(score)
+
+    return {
+        "score": round(score, 4),
+        "probability": round(probability, 4),
+        "is_same_speaker": score >= threshold,
+        "threshold": threshold,
+        "model_used": model_id,
+        "strategy": "enrolled-profiles",
+        "elapsed_seconds": round(time.perf_counter() - started, 4),
+        "preprocess_options": {"separate_vocals": False, "denoise": False},
+        "speaker_a_id": request.speaker_a_id,
+        "speaker_b_id": request.speaker_b_id,
+    }
 
 
 @router.post("/verify")

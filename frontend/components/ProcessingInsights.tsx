@@ -25,6 +25,8 @@ export function ProcessingInsights({
     key = "summary_verify_fast_return";
   } else if (mode === "verify" && strategy === "fast-profile") {
     key = "summary_verify_fast_profile";
+  } else if (mode === "verify" && strategy === "enrolled-profiles") {
+    key = "summary_verify_enrolled_profiles";
   }
 
   return <p className="text-sm text-muted-foreground">{t(key, { seconds })}</p>;
