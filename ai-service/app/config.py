@@ -128,7 +128,7 @@ class Settings(BaseSettings):
     # between is explicitly inconclusive.
     verify_threshold: float = 0.90
     verify_different_threshold: float = 0.35
-    profile_verify_threshold: float = 0.75
+    profile_verify_threshold: float = 0.79
     profile_verify_different_threshold: float = 0.50
 
     # Default model used when caller does not specify one

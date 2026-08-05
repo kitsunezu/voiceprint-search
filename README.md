@@ -150,7 +150,7 @@ Common variables:
 - VERIFY_DIFFERENT_THRESHOLD: lower audio-verification decision boundary, default 0.35
 - VERIFY_THRESHOLD: upper audio-verification decision boundary, default 0.90
 - PROFILE_VERIFY_DIFFERENT_THRESHOLD: lower stored-profile boundary, default 0.50
-- PROFILE_VERIFY_THRESHOLD: upper stored-profile boundary, default 0.75
+- PROFILE_VERIFY_THRESHOLD: upper stored-profile boundary, default 0.79
 - PREPROCESS_NORMALIZE_MAX_SECONDS: maximum query analysis window, default 90
 - PREPROCESS_MAX_SPEECH_SECONDS: maximum detected speech considered, default 60
 - PREPROCESS_MAX_SEGMENTS: evenly sampled ECAPA segment budget, default 12
