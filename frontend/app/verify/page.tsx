@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
-import { Database, Loader2, Upload } from "lucide-react";
+import { ChevronDown, Database, Loader2, Search, Upload, Users, X } from "lucide-react";
 import { AudioUploader } from "@/components/AudioUploader";
 import { useBackgroundTasks, type Speaker, type VerifyResult } from "@/components/background-tasks";
 import { ModelSelector } from "@/components/ModelSelector";
@@ -104,6 +104,18 @@ export default function VerifyPage() {
     }
   }
 
+  function changeSpeakerA(value: string) {
+    setSpeakerAId(value);
+    setDatabaseResult(null);
+    setDatabaseError(null);
+  }
+
+  function changeSpeakerB(value: string) {
+    setSpeakerBId(value);
+    setDatabaseResult(null);
+    setDatabaseError(null);
+  }
+
   function getStageLabel(stage: string | undefined): string {
     switch (stage) {
       case "queued": return t("stage_queued");
@@ -168,8 +180,8 @@ export default function VerifyPage() {
         <div className="space-y-5">
           <p className="text-sm text-muted-foreground">{t("database_hint")}</p>
           <div className="grid gap-6 sm:grid-cols-2">
-            <SpeakerSelect label={t("speaker_a")} value={speakerAId} onChange={setSpeakerAId} speakers={speakers} excludedId={speakerBId} placeholder={speakersLoading ? t("loading_speakers") : t("select_speaker")} />
-            <SpeakerSelect label={t("speaker_b")} value={speakerBId} onChange={setSpeakerBId} speakers={speakers} excludedId={speakerAId} placeholder={speakersLoading ? t("loading_speakers") : t("select_speaker")} />
+            <SpeakerSelect label={t("speaker_a")} value={speakerAId} onChange={changeSpeakerA} speakers={speakers} excludedId={speakerBId} loading={speakersLoading} />
+            <SpeakerSelect label={t("speaker_b")} value={speakerBId} onChange={changeSpeakerB} speakers={speakers} excludedId={speakerAId} loading={speakersLoading} />
           </div>
           {!speakersLoading && speakers.length < 2 && <p className="text-sm text-muted-foreground">{t("not_enough_speakers")}</p>}
           <Button onClick={() => void compareEnrolledSpeakers()} disabled={!speakerAId || !speakerBId || speakerAId === speakerBId || databaseLoading} size="lg" className="w-full sm:w-auto">
@@ -200,14 +212,85 @@ export default function VerifyPage() {
   );
 }
 
-function SpeakerSelect({ label, value, onChange, speakers, excludedId, placeholder }: { label: string; value: string; onChange: (value: string) => void; speakers: Speaker[]; excludedId: string; placeholder: string }) {
+function SpeakerSelect({ label, value, onChange, speakers, excludedId, loading }: { label: string; value: string; onChange: (value: string) => void; speakers: Speaker[]; excludedId: string; loading: boolean }) {
+  const t = useTranslations("verify");
+  const inputId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selectedSpeaker = speakers.find((speaker) => String(speaker.id) === value) ?? null;
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredSpeakers = speakers.filter((speaker) => {
+    if (String(speaker.id) === excludedId) return false;
+    if (!normalizedQuery) return true;
+    return speaker.name.toLocaleLowerCase().includes(normalizedQuery) || String(speaker.id).includes(normalizedQuery);
+  });
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  function selectSpeaker(speaker: Speaker) {
+    onChange(String(speaker.id));
+    setQuery("");
+    setOpen(false);
+  }
+
+  function clearSpeaker() {
+    onChange("");
+    setQuery("");
+    setOpen(true);
+  }
+
   return (
-    <label className="space-y-2">
-      <span className="text-sm font-medium">{label}</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)} className="h-11 w-full rounded-md border border-input bg-background px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <option value="">{placeholder}</option>
-        {speakers.filter((speaker) => String(speaker.id) !== excludedId).map((speaker) => <option key={speaker.id} value={speaker.id}>{speaker.name} (ID: {speaker.id})</option>)}
-      </select>
-    </label>
+    <div ref={rootRef} className="relative space-y-2">
+      <label htmlFor={inputId} className="text-sm font-medium">{label}</label>
+      {selectedSpeaker ? (
+        <div className="flex h-11 items-center gap-3 rounded-md border border-primary/40 bg-primary/10 px-3">
+          <Users className="size-4 shrink-0 text-primary" />
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-medium">{selectedSpeaker.name}</p>
+            <p className="text-xs text-muted-foreground">ID {selectedSpeaker.id}</p>
+          </div>
+          <button type="button" onClick={clearSpeaker} className="rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground" aria-label={t("clear_speaker", { label })}>
+            <X className="size-4" />
+          </button>
+        </div>
+      ) : (
+        <div className="flex h-11 items-center gap-2.5 rounded-md border border-input bg-background px-3 focus-within:ring-2 focus-within:ring-ring">
+          {loading ? <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" /> : <Search className="size-4 shrink-0 text-muted-foreground" />}
+          <input
+            id={inputId}
+            type="search"
+            value={query}
+            disabled={loading}
+            onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
+            onFocus={() => setOpen(true)}
+            onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}
+            placeholder={loading ? t("loading_speakers") : t("search_speaker")}
+            autoComplete="off"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+          />
+          <ChevronDown className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
+        </div>
+      )}
+
+      {open && !selectedSpeaker && !loading && (
+        <div className="absolute top-full z-20 mt-1.5 max-h-60 w-full overflow-y-auto rounded-md border border-border bg-card py-1 shadow-xl overscroll-contain">
+          {filteredSpeakers.map((speaker) => (
+            <button key={speaker.id} type="button" onClick={() => selectSpeaker(speaker)} className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors hover:bg-accent">
+              <Users className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-sm">{speaker.name}</span>
+              <span className="shrink-0 text-xs tabular-nums text-muted-foreground">ID {speaker.id}</span>
+            </button>
+          ))}
+          {filteredSpeakers.length === 0 && <p className="px-3 py-5 text-center text-sm text-muted-foreground">{t("no_matching_speakers")}</p>}
+        </div>
+      )}
+    </div>
   );
 }
