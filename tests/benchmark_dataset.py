@@ -14,14 +14,16 @@ from shutil import rmtree
 
 import numpy as np
 
-sys.path.insert(0, "/app")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "ai-service"))
 
 from app.config import settings
 from app.core.audio import normalize_audio, repeat_pad, segment_waveform
 from app.core.calibration import CalibratorRegistry
 from app.core.denoise import Denoiser
-from app.core.embedder import EmbedderRegistry, embed_segments
-from app.core.preprocessing import PreprocessError, PreprocessResult, SAMPLE_RATE
+from app.core.embedder import EmbedderRegistry, embed_segments, weighted_average_embeddings
+from app.core.preprocessing import AudioPreprocessor, PreprocessError, PreprocessResult, SAMPLE_RATE
+from app.core.reference_profiles import build_reference_profile
 from app.core.separator import VocalSeparator
 from app.core.vad import VoiceActivityDetector
 
@@ -49,7 +51,9 @@ def collect_samples(root: Path) -> list[Sample]:
     for folder in sorted(child for child in root.iterdir() if child.is_dir()):
         audio_files = sorted(
             path for path in folder.iterdir()
-            if path.is_file() and path.suffix.lower() in AUDIO_SUFFIXES
+            if path.is_file()
+            and path.suffix.lower() in AUDIO_SUFFIXES
+            and ".window-" not in path.name
         )
         for path in audio_files:
             samples.append(
@@ -253,6 +257,7 @@ def evaluate_verify(
 def evaluate_search(
     samples: list[Sample],
     embeddings: dict[str, dict[str, dict[str, np.ndarray | None]]],
+    reference_embeddings: dict[str, dict[str, dict[str, list[tuple[np.ndarray, float]]]]],
     registry: EmbedderRegistry,
     *,
     variants: list[str],
@@ -271,33 +276,38 @@ def evaluate_search(
             total = 0
             details: list[dict] = []
             variant_embeddings = embeddings.get(variant, {})
+            variant_reference_embeddings = reference_embeddings.get(variant, {})
             for sample in samples:
                 query_vec = variant_embeddings.get(sample.key, {}).get(model_id)
                 if query_vec is None:
                     continue
 
                 own_refs = [
-                    variant_embeddings.get(candidate.key, {}).get(model_id)
+                    variant_reference_embeddings.get(candidate.key, {}).get(model_id)
                     for candidate in grouped[sample.canonical]
                     if candidate.key != sample.key
                 ]
-                own_refs = [vec for vec in own_refs if vec is not None]
+                own_refs = [rows for rows in own_refs if rows]
                 if not own_refs:
                     continue
 
                 rankings: list[dict] = []
                 for canonical, speaker_samples in grouped.items():
-                    ref_vecs = [
-                        variant_embeddings.get(candidate.key, {}).get(model_id)
+                    ref_rows = [
+                        variant_reference_embeddings.get(candidate.key, {}).get(model_id)
                         for candidate in speaker_samples
                         if candidate.key != sample.key
                     ]
-                    ref_vecs = [vec for vec in ref_vecs if vec is not None]
-                    if not ref_vecs:
+                    ref_rows = [rows for rows in ref_rows if rows]
+                    if not ref_rows:
                         continue
 
+                    flat_ref_rows = [row for rows in ref_rows for row in rows]
+                    ref_vecs = [vec for vec, _ in flat_ref_rows]
+                    ref_weights = [weight for _, weight in flat_ref_rows]
+
                     best_score = max(float(embedder.similarity(query_vec, ref_vec)) for ref_vec in ref_vecs)
-                    centroid_vec = np.mean(ref_vecs, axis=0)
+                    centroid_vec = weighted_average_embeddings(ref_vecs, weights=ref_weights)
                     centroid_score = float(embedder.similarity(query_vec, centroid_vec))
 
                     if strategy == "centroid":
@@ -314,6 +324,7 @@ def evaluate_search(
                             "best_score": round(best_score, 4),
                             "centroid_score": round(centroid_score, 4),
                             "reference_count": len(ref_vecs),
+                            "reference_asset_count": len(ref_rows),
                         }
                     )
 
@@ -518,51 +529,77 @@ def main() -> None:
     separator_profile = settings.get_separator_profile(args.separator_profile, args.separator_model)
     separator = VocalSeparator(cfg=settings, profile=separator_profile)
     denoiser = Denoiser()
+    preprocessor = AudioPreprocessor(vad=vad, separator=separator, denoiser=denoiser, cfg=settings)
 
     timings_by_variant: dict[str, dict[str, dict[str, float]]] = defaultdict(dict)
     embeddings: dict[str, dict[str, dict[str, np.ndarray | None]]] = defaultdict(dict)
+    reference_embeddings: dict[str, dict[str, dict[str, list[tuple[np.ndarray, float]]]]] = defaultdict(dict)
     embedding_times: dict[str, dict[str, list[float]]] = defaultdict(lambda: defaultdict(list))
     failures: dict[str, list[dict]] = defaultdict(list)
 
     active_variants = {variant: VARIANTS[variant] for variant in selected_variants}
+    original_preprocess_separate = settings.preprocess_separate_vocals
+    original_preprocess_denoise = settings.preprocess_denoise
 
-    for variant, options in active_variants.items():
-        print(
-            f"[benchmark] separator={separator_profile.id} variant={variant} search={args.search_strategy} ...",
-            flush=True,
-        )
-        for index, sample in enumerate(samples, start=1):
-            print(f"  [sample {index}/{len(samples)}] {sample.key}", flush=True)
-            start = time.perf_counter()
-            try:
-                result, timings = process_with_timings(
-                    sample.path,
-                    separate=options["separate"],
-                    denoise=options["denoise"],
-                    vad=vad,
-                    separator=separator,
-                    denoiser=denoiser,
-                )
-            except Exception as exc:
-                failures[variant].append({"sample": sample.key, "error": str(exc)})
-                embeddings[variant][sample.key] = {model_id: None for model_id in registry.available_ids}
-                continue
+    try:
+        for variant, options in active_variants.items():
+            settings.preprocess_separate_vocals = options["separate"]
+            settings.preprocess_denoise = options["denoise"]
+            print(
+                f"[benchmark] separator={separator_profile.id} variant={variant} search={args.search_strategy} ...",
+                flush=True,
+            )
+            for index, sample in enumerate(samples, start=1):
+                print(f"  [sample {index}/{len(samples)}] {sample.key}", flush=True)
+                start = time.perf_counter()
+                try:
+                    result, timings = process_with_timings(
+                        sample.path,
+                        separate=options["separate"],
+                        denoise=options["denoise"],
+                        vad=vad,
+                        separator=separator,
+                        denoiser=denoiser,
+                    )
+                    profile_windows, _, _ = build_reference_profile(
+                        str(sample.path),
+                        preprocessor=preprocessor,
+                        cfg=settings,
+                    )
+                except Exception as exc:
+                    failures[variant].append({"sample": sample.key, "error": str(exc)})
+                    embeddings[variant][sample.key] = {model_id: None for model_id in registry.available_ids}
+                    reference_embeddings[variant][sample.key] = {model_id: [] for model_id in registry.available_ids}
+                    continue
 
-            timings["wall_total"] = round(time.perf_counter() - start, 4)
-            timings_by_variant[variant][sample.key] = timings
+                timings["wall_total"] = round(time.perf_counter() - start, 4)
+                timings_by_variant[variant][sample.key] = timings
 
-            sample_embeddings: dict[str, np.ndarray | None] = {}
-            for model_id in registry.available_ids:
-                t0 = time.perf_counter()
-                vec = embed_segments(registry.get(model_id), result.segments)
-                embedding_times[variant][model_id].append(time.perf_counter() - t0)
-                sample_embeddings[model_id] = vec
-            embeddings[variant][sample.key] = sample_embeddings
+                sample_embeddings: dict[str, np.ndarray | None] = {}
+                sample_reference_embeddings: dict[str, list[tuple[np.ndarray, float]]] = {}
+                for model_id in registry.available_ids:
+                    t0 = time.perf_counter()
+                    embedder = registry.get(model_id)
+                    vec = embed_segments(embedder, result.segments)
+                    embedding_times[variant][model_id].append(time.perf_counter() - t0)
+                    sample_embeddings[model_id] = vec
+
+                    reference_rows: list[tuple[np.ndarray, float]] = []
+                    for window in profile_windows:
+                        reference_rows.append((embed_segments(embedder, window.segments), float(window.weight)))
+                    sample_reference_embeddings[model_id] = reference_rows
+
+                embeddings[variant][sample.key] = sample_embeddings
+                reference_embeddings[variant][sample.key] = sample_reference_embeddings
+    finally:
+        settings.preprocess_separate_vocals = original_preprocess_separate
+        settings.preprocess_denoise = original_preprocess_denoise
 
     verify_results = evaluate_verify(samples, embeddings, registry, selected_variants)
     search_results = evaluate_search(
         samples,
         embeddings,
+        reference_embeddings,
         registry,
         variants=selected_variants,
         strategy=args.search_strategy,
@@ -607,6 +644,7 @@ def main() -> None:
             "best": round(best_weight, 4),
             "centroid": round(centroid_weight, 4),
         },
+        "reference_mode": "weighted_profile_windows",
         "samples": [
             {"key": sample.key, "folder": sample.folder, "canonical": sample.canonical}
             for sample in samples
