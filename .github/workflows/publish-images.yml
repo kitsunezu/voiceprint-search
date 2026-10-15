@@ -1,24 +1,23 @@
 name: Publish Images
 
 on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
   push:
-    branches:
-      - main
     tags:
       - "v*"
-    paths:
-      - ".github/workflows/publish-images.yml"
-      - "ai-service/**"
-      - "frontend/**"
   workflow_dispatch:
 
 concurrency:
-  group: publish-images-${{ github.ref }}
-  cancel-in-progress: true
+  group: publish-images-${{ github.event.workflow_run.head_branch || github.ref_name || github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
   packages: write
+  id-token: write
 
 env:
   REGISTRY: ghcr.io
@@ -28,10 +27,29 @@ env:
 jobs:
   publish-frontend:
     name: Publish Frontend Image
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || github.event_name == 'push' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Reject stale production commits
+        if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          current_revision="$(curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/main" | jq -er '.object.sha')"
+          if [ "$current_revision" != "$EXPECTED_REVISION" ]; then
+            echo "::error::A newer production commit exists; this run must not publish or deploy an older release"
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -49,10 +67,10 @@ jobs:
         with:
           images: ${{ env.FRONTEND_IMAGE }}
           tags: |
-            type=ref,event=branch
             type=ref,event=tag
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=main,enable=${{ github.event.workflow_run.head_branch == 'main' || github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.event.workflow_run.head_branch == 'main' || github.ref == 'refs/heads/main' }}
+            type=raw,value=sha-${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Build and push frontend image
         uses: docker/build-push-action@v6
@@ -61,6 +79,8 @@ jobs:
           file: ./frontend/Dockerfile
           platforms: linux/amd64
           push: true
+          build-args: |
+            BUILD_REVISION=${{ github.event.workflow_run.head_sha || github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=frontend
@@ -68,10 +88,29 @@ jobs:
 
   publish-ai-service:
     name: Publish AI Service Image
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || github.event_name == 'push' || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Reject stale production commits
+        if: github.event_name != 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          current_revision="$(curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/main" | jq -er '.object.sha')"
+          if [ "$current_revision" != "$EXPECTED_REVISION" ]; then
+            echo "::error::A newer production commit exists; this run must not publish or deploy an older release"
+            exit 1
+          fi
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -89,10 +128,10 @@ jobs:
         with:
           images: ${{ env.AI_SERVICE_IMAGE }}
           tags: |
-            type=ref,event=branch
             type=ref,event=tag
-            type=sha,prefix=sha-
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=main,enable=${{ github.event.workflow_run.head_branch == 'main' || github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.event.workflow_run.head_branch == 'main' || github.ref == 'refs/heads/main' }}
+            type=raw,value=sha-${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Build and push AI service image
         uses: docker/build-push-action@v6
@@ -101,60 +140,107 @@ jobs:
           file: ./ai-service/Dockerfile
           platforms: linux/amd64
           push: true
+          build-args: |
+            BUILD_REVISION=${{ github.event.workflow_run.head_sha || github.sha }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha,scope=ai-service
           cache-to: type=gha,mode=max,scope=ai-service
 
-  redeploy-portainer:
-    name: Redeploy Portainer Stack
+  deploy-coolify:
+    name: Deploy to Coolify
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.head_repository.full_name == github.repository)
     runs-on: ubuntu-latest
     needs:
       - publish-frontend
       - publish-ai-service
-    if: github.ref == 'refs/heads/main'
     steps:
-      - name: Trigger Portainer redeploy
+      - name: Reject stale production commits
         env:
-          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
-          PORTAINER_API_KEY: ${{ secrets.PORTAINER_API_KEY }}
-          PORTAINER_BASE_URL: https://portainer.kitsunet.app
-          PORTAINER_STACK_ID: "39"
-          PORTAINER_ENDPOINT_ID: "3"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
-          if [ -z "$PORTAINER_API_KEY" ]; then
-            echo "::error::PORTAINER_API_KEY secret is not configured"
-            exit 1
-          fi
-          if [ -z "$CF_ACCESS_CLIENT_ID" ] || [ -z "$CF_ACCESS_CLIENT_SECRET" ]; then
-            echo "::error::Cloudflare Access service token secrets are not configured"
+          set -euo pipefail
+          current_revision="$(curl --fail --silent --show-error \
+            --connect-timeout 10 --max-time 30 \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/main" | jq -er '.object.sha')"
+          if [ "$current_revision" != "$EXPECTED_REVISION" ]; then
+            echo "::error::A newer production commit exists; this run must not publish or deploy an older release"
             exit 1
           fi
 
+      - name: Connect to Kitsunet over Tailscale
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          audience: ${{ secrets.TS_AUDIENCE }}
+          tags: tag:kitsunet-deploy
+          ping: 192.168.1.5
+          args: --accept-routes
+          version: 1.94.2
+
+      - name: Request Coolify deployment
+        env:
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_DEPLOY_TOKEN }}
+          COOLIFY_URL: http://192.168.1.5:8000
+          COOLIFY_SERVICE_UUID: "5cizyllxw1ozz4twubd6dgxk"
+        run: |
+          set -euo pipefail
           response_file="$(mktemp)"
-          http_code="$(curl --silent --show-error \
+          trap 'rm -f "$response_file"' EXIT
+          status="$(curl --silent --show-error \
+            --connect-timeout 10 --max-time 60 \
             --output "$response_file" \
-            --write-out "%{http_code}" \
-            --request PUT \
-            --header "CF-Access-Client-ID: $CF_ACCESS_CLIENT_ID" \
-            --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
-            --header "X-API-Key: $PORTAINER_API_KEY" \
-            --header "Content-Type: application/json" \
-            --data '{"RepullImageAndRedeploy":true}' \
-            "$PORTAINER_BASE_URL/api/stacks/$PORTAINER_STACK_ID/git/redeploy?endpointId=$PORTAINER_ENDPOINT_ID")"
-
-          if [ "$http_code" -ge 200 ] && [ "$http_code" -lt 300 ]; then
-            cat "$response_file"
-            exit 0
+            --write-out '%{http_code}' \
+            --request POST \
+            --header "Authorization: Bearer $COOLIFY_API_TOKEN" \
+            "$COOLIFY_URL/api/v1/deploy?uuid=$COOLIFY_SERVICE_UUID&force=false")"
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "::error::Coolify deploy request failed (HTTP $status)"
+            exit 1
           fi
-
-          if [ "$http_code" = "504" ]; then
-            echo "::warning::Portainer redeploy timed out through Cloudflare after the request was accepted. Check the stack update time in Portainer if confirmation is needed."
-            cat "$response_file"
-            exit 0
+          if ! jq --exit-status --arg uuid "$COOLIFY_SERVICE_UUID" '
+            .deployments | length == 1 and
+            .[0].resource_uuid == $uuid and
+            (.[0].message | startswith("Service ") and
+              endswith(" started. It could take a while, be patient."))
+          ' "$response_file" >/dev/null 2>&1; then
+            echo "::error::Coolify did not confirm a start request for the expected service"
+            exit 1
           fi
+          echo "Coolify accepted deployment request for commit ${{ github.event.workflow_run.head_sha || github.sha }}"
 
-          cat "$response_file"
-          echo "::error::Portainer redeploy failed with HTTP $http_code"
+      - name: Verify the deployed release
+        timeout-minutes: 12
+        env:
+          EXPECTED_REVISION: ${{ github.event.workflow_run.head_sha || github.sha }}
+          RELEASE_URLS: |
+            https://voiceprint.kitsunezu.com/deployment-version.json
+            https://voiceprint.kitsunezu.com/api/health
+        run: |
+          set -euo pipefail
+          deadline=$((SECONDS + 600))
+          while (( SECONDS < deadline )); do
+            ready=true
+            while IFS= read -r url; do
+              [ -n "$url" ] || continue
+              if ! curl --fail --silent --show-error --connect-timeout 5 --max-time 10 \
+                --header 'Cache-Control: no-cache' \
+                "$url?revision=$EXPECTED_REVISION&attempt=$SECONDS" \
+                | jq --exit-status --arg revision "$EXPECTED_REVISION" '
+                  .revision == $revision and .ok != false and
+                  .status != "degraded" and .model_loaded != false and .db_connected != false
+                ' >/dev/null 2>&1; then
+                ready=false
+                break
+              fi
+            done <<< "$RELEASE_URLS"
+            if [ "$ready" = true ]; then
+              echo "Public endpoints are healthy and serve revision $EXPECTED_REVISION"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::The expected release did not become healthy within 10 minutes"
           exit 1

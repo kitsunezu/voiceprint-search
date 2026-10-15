@@ -1,5 +1,7 @@
 """Health check endpoint."""
 
+import os
+
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,6 +25,7 @@ async def health(
         pass
 
     return {
+        "revision": os.getenv("BUILD_REVISION", "development"),
         "status": "ok" if db_ok else "degraded",
         "model_loaded": embedder.model is not None,
         "db_connected": db_ok,
