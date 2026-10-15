@@ -66,6 +66,9 @@ get_model('htdemucs')"
 
 COPY . .
 
+ARG BUILD_REVISION=development
+ENV BUILD_REVISION=$BUILD_REVISION
+LABEL org.opencontainers.image.revision=$BUILD_REVISION
 EXPOSE 8000
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

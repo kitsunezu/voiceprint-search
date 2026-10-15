@@ -135,7 +135,7 @@ docker compose down
 
 ## Configuration
 
-The main runtime configuration is provided through environment variables in Docker Compose or Portainer.
+The main runtime configuration is provided through environment variables in the Coolify Compose service (or Docker Compose for local development).
 
 Common variables:
 
@@ -145,7 +145,7 @@ Common variables:
 - MINIO_BUCKET: object storage bucket name
 - ENABLED_MODELS: comma-separated embedding model IDs, default ecapa-tdnn-v1
 - NEXT_PUBLIC_SITE_URL: public frontend base URL used for canonical tags, sitemap, manifest, and social metadata
-- OTEL_EXPORTER_OTLP_ENDPOINT: OTEL / SigNoz collector endpoint
+- OTEL_EXPORTER_OTLP_ENDPOINT: optional OTLP collector; leave unset on Kitsunet, where SigNoz is retired
 - SEARCH_STRATEGY: best, centroid, or hybrid
 - VERIFY_DIFFERENT_THRESHOLD: lower audio-verification decision boundary, default 0.35
 - VERIFY_THRESHOLD: upper audio-verification decision boundary, default 0.90
@@ -167,9 +167,9 @@ By default the stack now runs only ECAPA-TDNN for enrollment, search, and verifi
 
 Use [docker-compose.yml](docker-compose.yml) for local development and self-hosted testing.
 
-### Portainer Stack
+### Coolify production service
 
-Use [portainer-stack.yml](portainer-stack.yml) when deploying from prebuilt container images in Portainer.
+[portainer-stack.yml](portainer-stack.yml) remains the example for the prebuilt multi-service stack. Production uses the existing Coolify Compose resource, whose persistent volumes and secrets were migrated separately; do not create a second resource from the example over an existing deployment.
 
 The stack is designed to:
 
@@ -180,7 +180,7 @@ The stack is designed to:
 
 If you deployed an older Portainer stack before the audio asset processing columns were added, redeploy the stack once so the db-init service can patch the existing PostgreSQL schema before frontend and ai-service start.
 
-Before deploying, replace the default image references or set these variables in Portainer:
+Set the following values in the existing Coolify resource:
 
 - FRONTEND_IMAGE
 - AI_SERVICE_IMAGE
@@ -188,7 +188,6 @@ Before deploying, replace the default image references or set these variables in
 - DB_PASSWORD
 - MINIO_ACCESS_KEY
 - MINIO_SECRET_KEY
-- OTEL_EXPORTER_OTLP_ENDPOINT
 
 ## CI/CD
 
@@ -198,6 +197,8 @@ GitHub Actions workflows are included for both validation and image publishing.
 - [.github/workflows/publish-images.yml](.github/workflows/publish-images.yml): builds and pushes frontend and AI service images to GHCR on main, tags, or manual dispatch
 
 The worker uses the same image as ai-service with a different startup command.
+
+After a successful main-branch CI run, publishing joins Tailscale using GitHub OIDC and calls the existing Coolify service. Configure `TS_OAUTH_CLIENT_ID`, `TS_AUDIENCE`, and `COOLIFY_DEPLOY_TOKEN` in repository Secrets. Main deployments reject stale reruns; version tags publish images without deploying. Builds embed `BUILD_REVISION`; deployment succeeds only when the frontend version endpoint and AI health endpoint report the requested revision and healthy dependencies. App images in the live Compose use `pull_policy: always`; preserve existing PostgreSQL, Redis, MinIO and model-cache volumes.
 
 ## Notes on Build Size
 
