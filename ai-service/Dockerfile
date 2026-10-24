@@ -15,7 +15,7 @@ WORKDIR /app
 
 RUN python -m pip install --no-cache-dir --upgrade "pip>=26.2.2" "setuptools>=84.2.1"
 
-COPY requirements.txt .
+COPY requirements.txt patch_legacy_webrtcvad.py ./
 
 # ── 1. CPU-only PyTorch (saves ~2 GB over default CUDA build) ────────────────
 # Install torch/torchaudio from the official CPU-only wheel index FIRST so
@@ -28,6 +28,7 @@ RUN pip install --no-cache-dir \
 
 # ── 2. Everything else (torch already satisfied → pip skips it) ──────────────
 RUN pip install --no-cache-dir -r requirements.txt
+RUN python patch_legacy_webrtcvad.py
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 2 – runtime: slim image without build tools.
@@ -49,6 +50,9 @@ COPY --from=builder /usr/local/lib/python3.11/site-packages \
 COPY --from=builder /usr/local/bin /usr/local/bin
 
 WORKDIR /app
+
+# Exercise the legacy VAD after replacing pkg_resources with standard metadata.
+RUN python -c "import webrtcvad, resemblyzer; assert not webrtcvad.Vad(1).is_speech(bytes(320), 16000)"
 
 # Pre-download models during build so startup is fast.
 # /models is mounted as a named volume at runtime; Docker initialises the
