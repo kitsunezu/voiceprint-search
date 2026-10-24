@@ -20,10 +20,10 @@ export async function register() {
   const { HttpInstrumentation } = await import(
     "@opentelemetry/instrumentation-http"
   );
-  const { Resource } = await import("@opentelemetry/resources");
+  const { resourceFromAttributes } = await import("@opentelemetry/resources");
 
   const sdk = new NodeSDK({
-    resource: new Resource({
+    resource: resourceFromAttributes({
       "service.name":
         process.env.OTEL_SERVICE_NAME ?? "voiceprint-frontend",
     }),

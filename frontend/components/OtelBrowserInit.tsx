@@ -43,21 +43,16 @@ export function OtelBrowserInit() {
       const { DocumentLoadInstrumentation } = await import(
         "@opentelemetry/instrumentation-document-load"
       );
-      const { Resource } = await import("@opentelemetry/resources");
+      const { resourceFromAttributes } = await import("@opentelemetry/resources");
 
       if (_provider) return; // already initialised (Strict Mode second call)
 
       const traceExportUrl = new URL("/api/otel/traces", window.location.origin).toString();
 
       _provider = new WebTracerProvider({
-        resource: new Resource({ "service.name": "voiceprint-browser" }),
+        resource: resourceFromAttributes({ "service.name": "voiceprint-browser" }),
+        spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter({ url: traceExportUrl }))],
       });
-
-      _provider.addSpanProcessor(
-        new BatchSpanProcessor(
-          new OTLPTraceExporter({ url: traceExportUrl })
-        )
-      );
 
       // Use default StackContextManager (no zone.js dependency)
       _provider.register();

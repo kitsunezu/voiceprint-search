@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+RUN python -m pip install --no-cache-dir --upgrade "pip>=26.2.2" "setuptools>=84.2.1"
+
 COPY requirements.txt .
 
 # ── 1. CPU-only PyTorch (saves ~2 GB over default CUDA build) ────────────────

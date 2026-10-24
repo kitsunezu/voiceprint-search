@@ -155,7 +155,8 @@ services:
       - voiceprint-net
 
   minio:
-    image: minio/minio:latest
+    image: kitsunet/minio:security-20261024
+    pull_policy: never
     container_name: voiceprint-minio
     restart: unless-stopped
     command: server /data --console-address ":9001"

@@ -40,3 +40,9 @@ opentelemetry-instrumentation-fastapi>=0.44b0
 opentelemetry-exporter-otlp-proto-http>=1.20.0
 opentelemetry-instrumentation-sqlalchemy>=0.44b0
 opentelemetry-instrumentation-logging>=0.44b0
+
+# Patched transitive dependencies used by model download and image processing.
+certifi>=2026.10.23
+filelock>=4.2.4
+Pillow>=13.0.0
+setuptools>=84.2.1
