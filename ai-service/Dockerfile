@@ -40,6 +40,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     && rm -rf /var/lib/apt/lists/*
 
+# Remove the base image tooling metadata before copying the upgraded builder tools.
+RUN python -m pip install --no-cache-dir --upgrade "pip>=26.2.2" "setuptools>=84.2.1"
+
 # Copy compiled packages from the builder stage
 COPY --from=builder /usr/local/lib/python3.11/site-packages \
                     /usr/local/lib/python3.11/site-packages
